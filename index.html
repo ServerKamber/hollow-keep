@@ -1563,6 +1563,7 @@ function initAudio(){
   const lfo = AC.createOscillator(); lfo.frequency.value = 0.07;
   const lg = AC.createGain(); lg.gain.value = 0.02;
   lfo.connect(lg); lg.connect(droneGain.gain); lfo.start();
+  warmMusic();   // audio is unlocked — start prefetching every track so none arrives late
 }
 
 // ---- music: authored mp3 tracks per context. Played on each element's own output (NOT through
@@ -1592,6 +1593,31 @@ function loadTrack(name){
   const el = new Audio(); el.src = encodeURI(MUSIC_BASE + file);
   el.loop = true; el.preload = 'auto'; el.volume = 0;
   return (musicNodes[name] = { el, files, file, fade: 0 });
+}
+
+// ---- warm the cache: the tracks are 4-8MB each and were only fetched at the instant they were
+// triggered, so a boss theme could arrive seconds late. Once audio is unlocked we quietly prefetch
+// every track in priority order, chained on canplaythrough so we never saturate bandwidth and delay
+// the early ones. Purely a download warm-up — nothing plays until startMusic() asks for it.
+const MUSIC_WARM_ORDER = ['title','keep','gabriel','moss2','moss','choir'];
+let _musicWarmed = false;
+function warmMusic(){
+  if (_musicWarmed) return; _musicWarmed = true;
+  let i = 0;
+  const step = ()=>{
+    while (i < MUSIC_WARM_ORDER.length){
+      const node = loadTrack(MUSIC_WARM_ORDER[i++]);
+      if (!node) continue;
+      let advanced = false;
+      const next = ()=>{ if (advanced) return; advanced = true; step(); };
+      node.el.addEventListener('canplaythrough', next, { once:true });
+      node.el.addEventListener('error', next, { once:true });
+      setTimeout(next, 5000);        // fallback so a stalled fetch never freezes the chain
+      try { node.el.load(); } catch(e){}
+      return;                        // fetch this one; the next starts when it's buffered
+    }
+  };
+  step();
 }
 
 // one shared tween: each track's fade eases toward 1 (if it's curMusic) or 0 (otherwise)
