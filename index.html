@@ -1813,7 +1813,9 @@ const ETYPES = {
              skin:0x3a3550, cloth:0x1a1830, eye:0xb090ff, ranged:false,
              dive:{ tell:0.5, spd:22, time:0.4, dmg:16, cd:3.2, from:18 } }
 };
+let runSpawns = 0;   // organic (pool) spawns since the run began — reset on restart
 function pickType(){
+  if (runSpawns++ < 3) return 'hollow';   // the first three grunts of every run are always the simplest
   return ZONES[zoneIndex].pool();
 }
 // Every archetype builds its own silhouette, but must return head/la/ra/ll/rl/eyes —
@@ -6810,7 +6812,7 @@ function resetGame(){
   player.invulnT = 0; player.killSpeedT = 0; player.dashDmgT = 0;
   hitT = 0; document.getElementById('xhair').classList.remove('hit','kill');
   skills.eCd = 0; skills.rCd = 0; skills.rStock = boons.ultCharges || 1;
-  wave = 1; spawnT = 1.5; nextBossAt = 35; bossCount = 0;
+  wave = 1; spawnT = 1.5; nextBossAt = 35; bossCount = 0; runSpawns = 0;
   boons = defaultBoons(); lastBoonWave = 0; offering = false;
   document.getElementById('boonsHud').innerHTML = '';
   document.getElementById('boons').style.display = 'none';
