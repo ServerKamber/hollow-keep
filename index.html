@@ -314,6 +314,7 @@
   <div class="optrow" style="justify-content:center;cursor:pointer" id="duelPickGabriel"><label style="flex:none">GABRIEL &mdash; JUDGE OF THE HOLLOW KEEP</label></div>
   <div class="optrow" style="justify-content:center;cursor:pointer" id="duelPickMoss"><label style="flex:none">MOSS &mdash; THE SECOND JUDGE</label></div>
   <div class="optrow" style="justify-content:center;cursor:pointer" id="duelPickChoir"><label style="flex:none">CHOIR &mdash; THE HOLLOW VERDICT</label></div>
+  <div class="optrow" style="justify-content:center;cursor:pointer" id="duelPickWarden"><label style="flex:none">THE WARDEN OF THE CRYPT</label></div>
   <div class="optclosebtn" id="duelBack" style="margin-top:26px">BACK</div>
 </div>
 
@@ -410,7 +411,8 @@ const player = {
   onGround: false, jumps: 0, coyote: 0,
   wallNormal: null, wallTime: -99,
   dashCharges: 3, dashRegen: 0, dashMomentumT: 0, radius: 0.45, height: 1.7, eye: 1.62,
-  kills: 0, bobT: 0, dashDmgT: 0, dashHit: null, invulnT: 0, killSpeedT: 0
+  kills: 0, bobT: 0, dashDmgT: 0, dashHit: null, invulnT: 0, killSpeedT: 0,
+  slowT: 0, rootT: 0, portalInvuln: false   // Warden miasma slow / root-vine pin / safe-passage after a kill
 };
 const skills = { eCd: 0, eMax: 5, rCd: 0, rMax: 45, rStock: 1 };
 const input = { f:0,b:0,l:0,r:0, jumpQueued:false, firing:false };
@@ -427,9 +429,13 @@ function defaultBoons(){
            bossBane:false, secondWind:false, secondWindUsed:false,
            // ---- keystones: the only relics that read your build instead of nudging a number
            bloodPact:false, warRhythm:false, overcharge:false,
-           // ---- crowns (judge-only tier)
+           // ---- crowns (judge-only tier) — 4 signature crowns per boss
            execute:0, ultCharges:1, emberBlade:false, thorns:0, parryCharge:false,
-           killHaste:0, crowns:[] };
+           killHaste:0,
+           haloPulse:false, seismicDash:false, tremorBlade:false,   // Gabriel / Moss
+           rotKill:false, miasma:false,                             // Warden
+           echoes:false, chorus:false,                              // Choir
+           crowns:[] };
 }
 let boons = defaultBoons();
 let lastBoonWave = 0;
@@ -466,7 +472,7 @@ function saveMeta(){
 }
 function applySettings(){
   if (masterGain) masterGain.gain.value = settings.volume;
-  if (musicGain && music.name) musicGain.gain.value = settings.music;
+  for (const k in musicNodes){ musicNodes[k].el.volume = musicVol() * musicNodes[k].fade; }
   if (camera) camera.fov = settings.fov;
   if (camera) camera.updateProjectionMatrix();
 }
@@ -1073,28 +1079,38 @@ function buildZoneKeep(){
     [-6.5,5,ARENA_W-1],[6.5,5,ARENA_W-1]
   ], 0xd08a3e, 0xffb355);
 }
-// ---- enemy pool for the Keep — the exact v17 weights, kept as the first zone's pool
+// ---- enemy pools — the whole roster pulled forward one zone so each arena carries its boss's
+// ---- signature threat from the start. Still cumulative/mixed: every zone adds exactly one new
+// ---- type on top of the last, over a hollow baseline:
+//   Keep   (Gabriel) + brute ..... the heavy that leaps at you (büyükler)
+//   Crypt  (Warden)  + spitter ... ranged pressure (uzaktan vuranlar)
+//   Ossuary(Moss)    + gloom ..... dive-bombing birds (kuşlar)
+//   Void   (Choir)   + wraith .... ghosts, the Choir's own dead (hayaletler) — no longer gated
 function poolKeep(){
-  const r = Math.random();
-  if (wave >= 3 && r < 0.16) return 'brute';
-  if (wave >= 2 && r < 0.40) return 'wraith';
-  if (wave >= 2 && r < 0.60) return 'spitter';
-  if (wave >= 3 && r < 0.82) return 'gloom';
-  return 'hollow';
+  return Math.random() < 0.42 ? 'brute' : 'hollow';   // heavies stalk the first descent now
 }
-// ---- the Crypt's pool — ground-bound and heavy, favoring the enemies that suit close corridors
+// ---- the Crypt (Warden) — brutes joined by ranged spitters
 function poolCrypt(){
   const r = Math.random();
-  if (r < 0.42) return 'brute';
-  if (r < 0.72) return 'wraith';
+  if (r < 0.32) return 'brute';
+  if (r < 0.58) return 'spitter';
   return 'hollow';
 }
-// ---- the Void's pool — the sky is the threat here; aerial types dominate
+// ---- the Ossuary (Moss) — dive-bombing birds join the brutes and spitters on the bone floor
+function poolOssuary(){
+  const r = Math.random();
+  if (r < 0.30) return 'gloom';
+  if (r < 0.52) return 'spitter';
+  if (r < 0.70) return 'brute';
+  return 'hollow';
+}
+// ---- the Void (Choir) — the deepest arena: the Choir's ghosts haunt it from the first wave
 function poolVoid(){
   const r = Math.random();
-  if (r < 0.42) return 'gloom';
-  if (r < 0.68) return 'wraith';
-  if (r < 0.85) return 'spitter';
+  if (r < 0.20) return 'wraith';   // ghosts belong to this arena now — no bossCount gate
+  if (r < 0.40) return 'gloom';
+  if (r < 0.58) return 'spitter';
+  if (r < 0.74) return 'brute';
   return 'hollow';
 }
 
@@ -1109,10 +1125,16 @@ const ZONES = [
     sky:0x2b3a5c, fog:0x35456b, fogDensity:0.011, boss:'gabriel', bossAt:35,
     pool:poolKeep, spawn:V3(0,1.8,ARENA_W-6) },
   { id:'crypt', name:'THE CRYPT',       build:()=>buildZoneCrypt(),
-    sky:0x14131c, fog:0x1a1822, fogDensity:0.02,  boss:'moss',    bossAt:40,
+    sky:0x14131c, fog:0x1a1822, fogDensity:0.02,  boss:'warden',  bossAt:40,
+    intro:'THE CRYPT — THE WARDEN TENDS THE DEAD',
     pool:poolCrypt, spawn:V3(0,1.8,ARENA_W-6) },
+  { id:'ossuary', name:'THE OSSUARY',   build:()=>buildZoneOssuary(),
+    sky:0x1a1526, fog:0x241a33, fogDensity:0.022, boss:'moss',    bossAt:45,
+    intro:'THE OSSUARY — THE SECOND JUDGE STIRS',
+    pool:poolOssuary, spawn:V3(0,1.8,ARENA_W-6) },
   { id:'void',  name:'THE VOID BELOW',  build:()=>buildZoneVoid(),
-    sky:0x120a1e, fog:0x1c1030, fogDensity:0.026, boss:'choir', bossAt:45,
+    sky:0x120a1e, fog:0x1c1030, fogDensity:0.026, boss:'choir', bossAt:50,
+    intro:'THE VOID BELOW — THE CHOIR WAITS AS ONE',
     pool:poolVoid, spawn:V3(0,1.8,ARENA_W-6) }
 ];
 let zoneIndex = 0;
@@ -1132,55 +1154,54 @@ function loadZone(i){
   clearMortars();
   if (beam){ if(beam.mesh) scene.remove(beam.mesh); if(beam.warnMesh) scene.remove(beam.warnMesh); beam = null; }
   clearChoirBeams();
-  player.pos.copy(z.spawn); player.vel.set(0,0,0); player.onGround = false;
+  player.pos.copy(z.spawn); player.vel.set(0,0,0); player.onGround = false; player.portalInvuln = false;
   nextBossAt = player.kills + z.bossAt;
   spawnT = 1.5;
   if (gate){ gate.a = 0; gate.target = 0; gate.shut = true; gate.L.visible = true; gate.R.visible = true; applyGate(); }
   document.getElementById('bossbar').style.display = 'none';
   const zn = document.getElementById('zonename'); if (zn) zn.textContent = z.name;
 }
-// ---- TEMPORARY stand-ins, replaced with distinct geometry in v18 Parts 2 & 3
-// ---- Zone 2: THE CRYPT — a low-roofed, pillar-choked underground, opening onto a central
-// burial chamber lit from a gap in the ceiling. Same outer footprint as the Keep (buildPerimeter),
-// but a completely different interior: no towers-and-courtyard, just close stone and sarcophagi.
+// ---- Zone 2: THE CRYPT — the Warden's sepulcher. The old pillar-choked, low-roofed maze is
+// gone: this is now one wide open burial hall for a zoner fight, ringed by a broken colonnade
+// and anchored by four tall burial piers, its collapsed ceiling open to the dark above so the
+// Warden's geysers and bloom read cleanly. The green ground texture is left un-greyed so it
+// reads as moss creeping over the tomb-stone — the room the Warden has been rotting for an age.
 function buildZoneCrypt(){
-  zoneTint.setHex(0x6a7684);   // cold, near-desaturated stone
+  zoneTint.setHex(0x5a6a4a);   // damp, moss-eaten stone — greens the walls without killing the read
   buildZoneGround(0, makeGroundTexture());
   buildPerimeter();
 
-  const P = ARENA_P, RGY = 5;
-  // ---- low roof over the whole interior, with a light-well gap over the burial chamber
-  for(let gx=-P+3; gx<=P-3; gx++)
-    for(let gz=-P+3; gz<=P-3; gz++){
-      if (Math.abs(gx) <= 3 && Math.abs(gz) <= 3) continue;
-      putBlock(gx, RGY, gz);
-    }
-  addCollider(-(P-3)*B-1, RGY*B, -(P-3)*B-1, (P-3)*B+1, RGY*B+2*B, (P-3)*B+1);
+  const P = ARENA_P;
 
-  // ---- a forest of pillars holding the roof up — dense on purpose. Cleared around the burial
-  // chamber and around the south entry so the spawn point is never inside solid geometry.
-  for(let gx=-P+6; gx<=P-6; gx+=6)
-    for(let gz=-P+6; gz<=P-6; gz+=6){
-      if (Math.abs(gx) <= 5 && Math.abs(gz) <= 5) continue;
-      if (Math.abs(gx) <= 2 && gz >= 18) continue;
-      for(let gy=0; gy<RGY; gy++) putBlock(gx,gy,gz);
-      addCollider(gx*B-1,0,gz*B-1, gx*B+1,RGY*B, gz*B+1);
-    }
-
-  // ---- the burial chamber — four tall corner piers, open to the light-well above
-  [[-4,-4],[4,-4],[-4,4],[4,4]].forEach(([gx,gz])=>{
-    for(let gy=0; gy<RGY+2; gy++) putBlock(gx,gy,gz);
-    addCollider(gx*B-1,0,gz*B-1, gx*B+1,(RGY+2)*B, gz*B+1);
+  // ---- broken colonnade — a ring of shattered pillars framing the hall. Cover and silhouette,
+  // never a maze: they sit out near the wall (world radius ~40+) with a clear south gap for the
+  // approach, and the whole central hall (~18u radius) is left wide open for the fight.
+  const colonnade = [
+    [0,-20,4],[13,-15,3],[19,-6,4],[21,5,2],[14,15,3],
+    [-14,15,2],[-21,5,4],[-19,-6,3],[-13,-15,4]
+    // (no pillar due south — that lane is the way in)
+  ];
+  colonnade.forEach(([gx,gz,h])=>{
+    for(let gy=0; gy<h; gy++) putBlock(gx,gy,gz);
+    addCollider(gx*B-1,0,gz*B-1, gx*B+1,h*B, gz*B+1);
   });
 
-  // ---- sarcophagi — waist-high slabs scattered as obstacles/cover, never near the chamber centre or spawn
-  for(let i=0;i<22;i++){
+  // ---- four burial piers — tall, intact, at the diagonals. They anchor the room's corners
+  // well outside the fight core (world ±32), reading as the tomb's structure, not obstacles.
+  [[-16,-16],[16,-16],[16,16],[-16,16]].forEach(([gx,gz])=>{
+    for(let gy=0; gy<7; gy++) putBlock(gx,gy,gz);
+    addCollider(gx*B-1,0,gz*B-1, gx*B+1,7*B, gz*B+1);
+  });
+
+  // ---- sarcophagi — waist-high slabs as scattered cover in the mid-band. Never inside the
+  // central ~14u fight core, never in the south spawn lane, never overlapping a pillar.
+  for(let i=0;i<14;i++){
     const n1 = Math.sin(i*71.3)*15485.86, f1=n1-Math.floor(n1);
     const n2 = Math.sin(i*39.1+7)*9421.23, f2=n2-Math.floor(n2);
-    const gx = Math.round((f1-0.5)*2*(P-8));
-    const gz = Math.round((f2-0.5)*2*(P-8));
-    if (Math.abs(gx) <= 5 && Math.abs(gz) <= 5) continue;
-    if (Math.abs(gx) <= 2 && gz >= 18) continue;
+    const gx = Math.round((f1-0.5)*2*(P-10));
+    const gz = Math.round((f2-0.5)*2*(P-10));
+    if (Math.abs(gx) <= 7 && Math.abs(gz) <= 7) continue;   // keep the hall centre clear
+    if (Math.abs(gx) <= 3 && gz >= 16) continue;            // and the spawn approach open
     if (!cellFree(gx,gz,1)) continue;
     stack(gx,gz,1);
     addCollider(gx*B-0.9,0,gz*B-0.9, gx*B+0.9,B, gz*B+0.9);
@@ -1190,11 +1211,61 @@ function buildZoneCrypt(){
 
   const TW = ARENA_W - 2;
   placeTorches([
-    [0,3.2,0],[0,3.2,9],[0,3.2,-9],[9,3.2,0],[-9,3.2,0],
+    [0,2.6,10],[0,2.6,-10],[11,2.6,0],[-11,2.6,0],
+    [-32,5,-32],[32,5,-32],[32,5,32],[-32,5,32],
     [-TW,5,-TW],[TW,5,-TW],[-TW,5,TW],[TW,5,TW]
-  ], 0x4a6a8a, 0x9fd0ff);
+  ], 0x5a7a3a, 0x9fe060);   // sickly green tomb-light
 }
-// ---- Zone 3: THE VOID BELOW — a shattered cathedral floating over an abyss. The outer
+// ---- Zone 3: THE OSSUARY — the Second Judge's bone-vault. A violet-lit nave: two rows of tall
+// rib-pillars run north–south, framing a wide clear central aisle for Moss's chase/quake/scream,
+// with bone-pile cover scattered out toward the walls and four corner buttresses anchoring it.
+// Enclosed and heavy where the Crypt is open and green — a melee bruiser's room, never a maze.
+function buildZoneOssuary(){
+  zoneTint.setHex(0x6a5a86);   // pale violet bone-stone
+  buildZoneGround(0, makeGroundTexture());
+  buildPerimeter();
+
+  const P = ARENA_P;
+
+  // ---- the nave — paired rib-pillars at x=±10 (inner) and x=±18 (outer) down the z-axis. The
+  // inner pair frames the ~14u fight core without entering it; the outer pair gives wall cover.
+  [-18,-9,0,9,18].forEach(gz=>{
+    [[-10,6],[10,6],[-18,4],[18,4]].forEach(([gx,h])=>{
+      for(let gy=0; gy<h; gy++) putBlock(gx,gy,gz);
+      addCollider(gx*B-1,0,gz*B-1, gx*B+1,h*B, gz*B+1);
+    });
+  });
+
+  // ---- four tall corner buttresses at the diagonals (structure, well outside the fight core)
+  [[-20,-20],[20,-20],[20,20],[-20,20]].forEach(([gx,gz])=>{
+    for(let gy=0; gy<8; gy++) putBlock(gx,gy,gz);
+    addCollider(gx*B-1,0,gz*B-1, gx*B+1,8*B, gz*B+1);
+  });
+
+  // ---- bone-piles — waist-high cover in the mid-band, never in the central ~14u core or the
+  // south spawn lane, never overlapping a rib
+  for(let i=0;i<12;i++){
+    const n1 = Math.sin(i*57.7)*10331.7, f1=n1-Math.floor(n1);
+    const n2 = Math.sin(i*33.9+3)*7727.4, f2=n2-Math.floor(n2);
+    const gx = Math.round((f1-0.5)*2*(P-11));
+    const gz = Math.round((f2-0.5)*2*(P-11));
+    if (Math.abs(gx) <= 7 && Math.abs(gz) <= 7) continue;   // keep the aisle centre clear
+    if (Math.abs(gx) <= 3 && gz >= 16) continue;            // and the spawn approach open
+    if (!cellFree(gx,gz,1)) continue;
+    stack(gx,gz,1);
+    addCollider(gx*B-0.9,0,gz*B-0.9, gx*B+0.9,B, gz*B+0.9);
+  }
+
+  bakeBlocks();
+
+  const TW = ARENA_W - 2;
+  placeTorches([
+    [0,2.6,10],[0,2.6,-10],[11,2.6,0],[-11,2.6,0],
+    [-40,5,-40],[40,5,-40],[40,5,40],[-40,5,40],
+    [-TW,5,-TW],[TW,5,-TW],[-TW,5,TW],[TW,5,TW]
+  ], 0x7a5cff, 0xc9a0ff);   // cold violet ossuary-light
+}
+// ---- Zone 4: THE VOID BELOW — a shattered cathedral floating over an abyss. The outer
 // perimeter still holds (same footprint as every zone), but the interior is a narrower floating
 // span instead of full ground — the void shows at its edges. This is the FINAL zone: it's the
 // only one whose builder reaches buildBeyond(), so the causeway/terminus ending lives here.
@@ -1483,7 +1554,7 @@ function initAudio(){
   AC = new (window.AudioContext || window.webkitAudioContext)();
   masterGain = AC.createGain(); masterGain.gain.value = settings.volume; masterGain.connect(AC.destination);
   droneGain = AC.createGain(); droneGain.gain.value = 0.035; droneGain.connect(masterGain);
-  musicGain = AC.createGain(); musicGain.gain.value = 0.0001; musicGain.connect(masterGain);
+  musicGain = AC.createGain(); musicGain.gain.value = settings.music; musicGain.connect(masterGain);
   [55, 55.7, 110.4].forEach((f,i)=>{
     const o = AC.createOscillator(); o.type = i===2 ? 'triangle' : 'sine'; o.frequency.value = f;
     const g = AC.createGain(); g.gain.value = i===2 ? 0.25 : 0.6;
@@ -1494,110 +1565,71 @@ function initAudio(){
   lfo.connect(lg); lg.connect(droneGain.gain); lfo.start();
 }
 
-// ---- music: a tiny lookahead step-sequencer over three hand-scored tracks. Each track is a
-// 4-bar chord progression (bassProg/padProg, MIDI note numbers) played against an 8-step-per-bar
-// pulse pattern per voice, so "which beats play" and "what pitches play" are separate knobs.
+// ---- music: authored mp3 tracks per context. Played on each element's own output (NOT through
+// WebAudio) — createMediaElementSource mutes tainted file:// media in Chromium, so we drive
+// el.volume directly. Crossfades tween volume; loudness honors the master + music sliders.
 function midiFreq(m){ return 440 * Math.pow(2, (m-69)/12); }
-function musNote(freq, startT, dur, type, gainPeak, filterHz){
-  if (!AC) return;
-  const o = AC.createOscillator(); o.type = type; o.frequency.value = freq;
-  const g = AC.createGain();
-  g.gain.setValueAtTime(0.0001, startT);
-  g.gain.exponentialRampToValueAtTime(Math.max(gainPeak, 0.001), startT + 0.02);
-  g.gain.exponentialRampToValueAtTime(0.0001, startT + dur);
-  if (filterHz){
-    const f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = filterHz;
-    o.connect(f); f.connect(g);
-  } else {
-    o.connect(g);
-  }
-  g.connect(musicGain); o.start(startT); o.stop(startT + dur + 0.05);
-}
-const MUSIC_TRACKS = {
-  // dark, sparse, mostly negative space — sits under the drone while exploring
-  keep: {
-    bpm: 66,
-    bassProg: [45, 40, 43, 38], padProg: [[45,52,57],[40,47,52],[43,50,55],[38,45,50]],
-    bassPulse: [1,0,0,0,0,0,0,0], padPulse: [1,0,0,0,0,0,0,0], leadPulse: [0,0,0,0,0,0,1,0],
-    bassType:'sine', bassFilter:260, padType:'triangle', padFilter:480, leadType:'sine', leadFilter:1000,
-    bassGain:0.20, padGain:0.08, leadGain:0.06
-  },
-  // ceremonial dread march — heavy detuned "brass" chords, slow tolling downbeat
-  gabriel: {
-    bpm: 84,
-    bassProg: [40, 40, 37, 33], padProg: [[40,47,52,59],[40,47,52,59],[37,44,49,56],[33,40,45,52]],
-    bassPulse: [1,0,0,0,1,0,0,0], padPulse: [1,0,0,0,0,0,0,0], leadPulse: [0,0,1,0,0,0,1,0],
-    bassType:'sawtooth', bassFilter:220, padType:'sawtooth', padFilter:420, leadType:'sawtooth', leadFilter:700,
-    bassGain:0.18, padGain:0.15, leadGain:0.10
-  },
-  // relentless, fast, predatory — driving pulse, tighter dissonant stabs
-  moss: {
-    bpm: 140,
-    bassProg: [43, 43, 46, 41], padProg: [[43,50,54],[43,50,54],[46,53,57],[41,48,52]],
-    bassPulse: [1,1,1,1,1,1,1,1], padPulse: [0,0,1,0,0,0,1,0], leadPulse: [1,0,1,1,0,1,0,1],
-    bassType:'square', bassFilter:480, padType:'square', padFilter:900, leadType:'square', leadFilter:1600,
-    bassGain:0.14, padGain:0.10, leadGain:0.08
-  }
+const MUSIC_BASE = 'musics/';
+const MUSIC_FILES = {
+  title:   ['title screen/The Fallen King.mp3'],
+  keep:    ['for runs/run for life.mp3', 'for runs/running  or dying.mp3'],
+  gabriel: ['gabriel/Fallen Halo.mp3'],
+  moss:    ['moss/Astral Kill Switch.mp3'],
+  moss2:   ['moss/Astral Kill 2.mp3'],
+  choir:   ['choir/Void Sigil Run.mp3'],
 };
-let music = { name:null, timer:null, step:0, nextStepT:0, intensity:0 };
-function musicTick(){
-  if (!AC || !music.name) return;
-  const trk = MUSIC_TRACKS[music.name];
-  if (!trk) return;
-  const lookahead = 0.2;
-  const speed = music.intensity ? 0.82 : 1;
-  const stepDur = (60 / trk.bpm / 2) * speed;
-  const gainMul = music.intensity ? 1.15 : 1;
-  const filtMul = music.intensity ? 1.4 : 1;
-  while (music.nextStepT < AC.currentTime + lookahead){
-    const step = music.step % 32;
-    const bar = Math.floor(step / 8) % trk.bassProg.length;
-    const pulseIdx = step % 8;
-    const t = music.nextStepT;
-    if (trk.bassPulse[pulseIdx]) musNote(midiFreq(trk.bassProg[bar]), t, stepDur*1.4, trk.bassType, trk.bassGain*gainMul, trk.bassFilter*filtMul);
-    if (trk.padPulse[pulseIdx]) trk.padProg[bar].forEach(n=> musNote(midiFreq(n), t, stepDur*3.2, trk.padType, trk.padGain*gainMul, trk.padFilter*filtMul));
-    if (trk.leadPulse[pulseIdx]){
-      const chord = trk.padProg[bar];
-      const leadNote = chord[chord.length-1] + 12;
-      musNote(midiFreq(leadNote), t, stepDur*0.9, trk.leadType, trk.leadGain*gainMul, trk.leadFilter*filtMul);
-      if (music.intensity) musNote(midiFreq(leadNote+12), t, stepDur*0.6, trk.leadType, trk.leadGain*0.6, trk.leadFilter*filtMul);
+let music = { name: null };              // applySettings + triggers read .name
+const musicNodes = {};                   // key -> { el, files, file, fade }
+let curMusic = null;
+let musicFadeTimer = null;
+
+function musicVol(){ return Math.max(0, Math.min(1, settings.volume * settings.music)); }
+
+function loadTrack(name){
+  if (musicNodes[name]) return musicNodes[name];
+  const files = MUSIC_FILES[name]; if (!files) return null;
+  const file = files[(Math.random()*files.length)|0];
+  const el = new Audio(); el.src = encodeURI(MUSIC_BASE + file);
+  el.loop = true; el.preload = 'auto'; el.volume = 0;
+  return (musicNodes[name] = { el, files, file, fade: 0 });
+}
+
+// one shared tween: each track's fade eases toward 1 (if it's curMusic) or 0 (otherwise)
+function ensureFadeLoop(){
+  if (musicFadeTimer) return;
+  musicFadeTimer = setInterval(()=>{
+    let anyActive = false;
+    for (const k in musicNodes){
+      const nd = musicNodes[k];
+      const target = (k === curMusic) ? 1 : 0;
+      if (nd.fade < target) nd.fade = Math.min(target, nd.fade + 0.06);      // ~0.5s fade
+      else if (nd.fade > target) nd.fade = Math.max(target, nd.fade - 0.06);
+      nd.el.volume = musicVol() * nd.fade;
+      if (nd.fade > 0.0001) anyActive = true;
+      else if (!nd.el.paused){ try { nd.el.pause(); } catch(e){} }
     }
-    music.nextStepT += stepDur;
-    music.step++;
-  }
+    if (!anyActive && !curMusic){ clearInterval(musicFadeTimer); musicFadeTimer = null; }
+  }, 33);
 }
+
 function startMusic(name){
-  if (!AC || !musicGain) return;
-  if (music.name === name && music.timer) return;
-  const engage = ()=>{
-    if (music.timer) clearInterval(music.timer);
-    music.name = name; music.step = 0; music.intensity = 0;
-    music.nextStepT = AC.currentTime + 0.05;
-    music.timer = setInterval(musicTick, 40);
-    const t = AC.currentTime;
-    musicGain.gain.cancelScheduledValues(t);
-    musicGain.gain.setValueAtTime(0.0001, t);
-    musicGain.gain.linearRampToValueAtTime(Math.max(settings.music, 0.0001), t + 0.5);
-  };
-  if (music.name && music.timer){
-    const t = AC.currentTime;
-    musicGain.gain.cancelScheduledValues(t);
-    musicGain.gain.setValueAtTime(musicGain.gain.value, t);
-    musicGain.gain.linearRampToValueAtTime(0.0001, t + 0.4);
-    setTimeout(engage, 420);
-  } else {
-    engage();
+  if (curMusic === name) return;
+  const node = loadTrack(name); if (!node) return;
+  // multi-file tracks re-randomize each start (new run track each run)
+  if (node.files.length > 1){
+    const f = node.files[(Math.random()*node.files.length)|0];
+    if (f !== node.file){ node.file = f; node.el.src = encodeURI(MUSIC_BASE + f); }
   }
+  curMusic = name; music.name = name;
+  node.el.volume = musicVol() * node.fade;   // fade in from its current level
+  try { node.el.currentTime = 0; } catch(e){}
+  const p = node.el.play(); if (p && p.catch) p.catch(()=>{});   // autoplay guard
+  ensureFadeLoop();
 }
+
 function stopMusic(){
-  if (music.timer){ clearInterval(music.timer); music.timer = null; }
-  music.name = null;
-  if (musicGain && AC){
-    const t = AC.currentTime;
-    musicGain.gain.cancelScheduledValues(t);
-    musicGain.gain.setValueAtTime(musicGain.gain.value, t);
-    musicGain.gain.linearRampToValueAtTime(0.0001, t + 0.4);
-  }
+  curMusic = null; music.name = null;
+  ensureFadeLoop();   // loop eases every track to 0 and pauses it
 }
 function sfxVictory(){
   if (!AC) return; const t = AC.currentTime;
@@ -2061,11 +2093,15 @@ function updateSpawner(dt){
     spawnBoss(ZONES[zoneIndex].boss); return;
   }
 
-  const maxAlive = Math.min(3 + wave*2, 12);
+  // the Keep is the tutorial descent — only weak hollows spawn. Night 1 stays a gentle intro;
+  // from night 2 on the swarm builds each night (fzBump ramps 0->4), packing them denser.
+  const firstZone = zoneIndex === 0;
+  const fzBump = firstZone ? Math.min(Math.max(wave-1,0), 4) : 0;
+  const maxAlive = Math.min(3 + wave*2 + fzBump*2, firstZone?16:12);
   spawnT -= dt;
   const alive = monsters.filter(m=>m.state!=='dead').length;
   if (spawnT <= 0 && alive < maxAlive){
-    spawnT = Math.max(0.7, 3.8 - wave*0.4);
+    spawnT = Math.max(fzBump>0?0.5:0.7, 3.8 - wave*0.4);
     // Out of your lap, but not across the map. This used to sort farthest-first and so it
     // always picked the two 90-unit corners while 25-unit doors sat unused — every wave began
     // with a long walk. Now: take the near band, shuffle it so the same doorway does not feed
@@ -2081,7 +2117,7 @@ function updateSpawner(dt){
       const t = open[i]; open[i] = open[j]; open[j] = t;
     }
     // spawn a small pack — bigger nights send more at once
-    const pack = Math.min(1 + Math.floor(wave/2), 3, maxAlive - alive, open.length);
+    const pack = Math.min(1 + Math.floor(wave/2) + Math.min(fzBump,2), firstZone?5:3, maxAlive - alive, open.length);
     for(let i=0;i<pack;i++){
       const b = open[i].p;
       // never hand makeMonster a position inside a structure — try a few jittered
@@ -2581,6 +2617,18 @@ function damageMonster(m, dmg, point, kbDir, crit, isBlade){
       const W = WPN[gun.cur];
       if (gun.ammo[gun.cur] < W.mag){ gun.ammo[gun.cur]++; updateAmmoUI(); }
     }
+    // CROWN OF ROT (Warden): a felled foe bursts into a cloud of spores that eats the living
+    if (boons.rotKill && _crownDepth === 0)
+      crownBlast(m.group.position.clone().setY(1.2), 4.6, 30, 0x9fe060);
+    // CROWN OF ECHOES (Choir): the kill detonates, and the blast echoes to the nearest other foe
+    if (boons.echoes && _crownDepth === 0){
+      const at = m.group.position.clone().setY(1.3);
+      crownBlast(at, 4.0, 34, 0x9fe0ff);
+      let best=null, bd=1e9;
+      for(const o of monsters){ if(o===m || o.state==='dead') continue;
+        const d=o.group.position.distanceTo(at); if(d<bd){bd=d;best=o;} }
+      if (best && bd < 14) crownBlast(best.group.position.clone().setY(1.3), 3.2, 22, 0x9fe0ff);
+    }
   } else {
     hitmark(false);
     if (m.state==='lurk') m.state='chase';
@@ -2618,6 +2666,24 @@ function spawnBossSword(pos, vel, dmg, opts){
   }
   eprojs.push({ mesh:g, vel, dmg, life: 4, radius: o.heavy?1.5:0.9, spin:true, age: 0,
                 stopAt: o.stopAt||null, returnAt: o.returnAt||0, heavy: !!o.heavy, blade });
+}
+function detonateProj(p){
+  if (p._blown) return;
+  p._blown = true;
+  const at = p.mesh.position.clone();
+  const d = p.detonate || {};
+  addShake(d.shake != null ? d.shake : 0.6);
+  addHitstop(d.hitstop != null ? d.hitstop : 0.06);
+  burst(at, d.color || 0x9fe0ff, 20, 10);
+  spawnShockwave(at.clone().setY(Math.max(0.1, at.y - 1.6)),
+    { max: d.max || 14, dmg: d.dmg != null ? d.dmg : p.dmg, color: d.color || 0x9fe0ff });
+  const shrapN = d.shrapnel != null ? d.shrapnel : 6;
+  for(let i=0;i<shrapN;i++){
+    const a = (i/shrapN)*Math.PI*2 + Math.random()*0.3;
+    const dir = V3(Math.sin(a),0,Math.cos(a));
+    spawnEnemyOrb(at.clone(), dir.multiplyScalar(9), d.shrapDmg || Math.max(10, Math.round(p.dmg*0.4)),
+      d.color || 0x9fe0ff, 0.22);
+  }
 }
 function updateEnemyProjectiles(dt){
   for(let i=eprojs.length-1;i>=0;i--){
@@ -2657,17 +2723,19 @@ function updateEnemyProjectiles(dt){
     if (p.spin) p.mesh.rotateZ(dt*14);
     // converging blades burn out before the centre — the kill is the ground wave they leave, not a 16-sword pile-up
     if (p.stopAt && Math.hypot(p.mesh.position.x-p.stopAt.c.x, p.mesh.position.z-p.stopAt.c.z) < p.stopAt.r){
-      burst(p.mesh.position, 0xffd27a, 5, 5);
+      if (p.detonate) detonateProj(p); else burst(p.mesh.position, 0xffd27a, 5, 5);
       scene.remove(p.mesh); eprojs.splice(i,1); continue;
     }
     const d = p.mesh.position.distanceTo(V3(player.pos.x, player.pos.y-0.4, player.pos.z));
     if (d < p.radius + 0.55){
-      hurtPlayer(p.dmg, p.mesh.position);
-      burst(p.mesh.position, 0xcfe8ff, 8, 6);
+      // detonating glaives deal their damage through the blast (shockwave), not a direct hit —
+      // avoids double-dipping a point-blank hurtPlayer plus a zero-distance shockwave tick
+      if (p.detonate) detonateProj(p);
+      else { hurtPlayer(p.dmg, p.mesh.position); burst(p.mesh.position, 0xcfe8ff, 8, 6); }
       scene.remove(p.mesh); eprojs.splice(i,1); continue;
     }
     if (p.life <= 0 || p.mesh.position.y < 0.05 || p.mesh.position.y > 60){
-      burst(p.mesh.position, 0x9aa0ac, 4, 3);
+      if (p.detonate) detonateProj(p); else burst(p.mesh.position, 0x9aa0ac, 4, 3);
       scene.remove(p.mesh); eprojs.splice(i,1);
     }
   }
@@ -2862,64 +2930,80 @@ function buildBossMesh(){
 }
 
 // ------------------------------------------------------------------ THE SECOND BOSS — Moss, player-scale, purple
-function buildMossMesh(){
+// ---- MOSS, the Warden of the Crypt — NOT a purple Gabriel. A hunched, overgrown, moss-eaten
+// judge: a stooped frame swallowed by a great rotted back-hump of growth, a hooded skull with a
+// spore-lit slit, a broken tilted halo, and a gnarled root-censer that drips green. The rig keeps
+// the generic joint contract (halo/visor/accents/armL·R/elbowL·R/hipL·R/kneeL·R/neck/mace/wing*)
+// so spawnBoss/damageBoss/bossStagger/wardenPose read it exactly like the other two bosses.
+function buildWardenMesh(){
   const g = new THREE.Group();
-  const armor = new THREE.MeshLambertMaterial({ color:0x4a2b7a, emissive:0x140a2e });
-  const trim  = new THREE.MeshLambertMaterial({ color:0x8a5cff, emissive:0x2a1552 });
-  const cloth = new THREE.MeshLambertMaterial({ color:0x1a1420 });
-  const feather = new THREE.MeshLambertMaterial({ color:0x6a4aa8 });
-  const visorMat = new THREE.MeshBasicMaterial({ color:0xb77bff });
-  const innerMat = new THREE.MeshBasicMaterial({ color:0xd9b8ff });
-  const haloMat  = new THREE.MeshBasicMaterial({ color:0x9a5cff });
-  const maceGlowMat = new THREE.MeshBasicMaterial({ color:0xc99bff });
-  const wingGlowMat = new THREE.SpriteMaterial({ map: makeGlowTexture(), color:0xb77bff,
-    transparent:true, opacity:0.25, blending:THREE.AdditiveBlending, depthWrite:false });
+  const bark  = new THREE.MeshLambertMaterial({ color:0x2f3a22, emissive:0x0c1206 });   // dark rotted stone-bark
+  const moss  = new THREE.MeshLambertMaterial({ color:0x6f9a3a, emissive:0x233a10 });    // living moss trim (accent)
+  const cloth = new THREE.MeshLambertMaterial({ color:0x14180e });                       // black burial rag
+  const bone  = new THREE.MeshLambertMaterial({ color:0xa8a482 });                        // old bone
+  const frond = new THREE.MeshLambertMaterial({ color:0x4c6a2c });                        // drooping growth
+  const visorMat = new THREE.MeshBasicMaterial({ color:0xbfff6a });                        // spore glow
+  const innerMat = new THREE.MeshBasicMaterial({ color:0xdfffa0 });
+  const haloMat  = new THREE.MeshBasicMaterial({ color:0x7aab3a });
+  const maceGlowMat = new THREE.MeshBasicMaterial({ color:0xbfff6a });
+  const wingGlowMat = new THREE.SpriteMaterial({ map: makeGlowTexture(), color:0x9fe060,
+    transparent:true, opacity:0.22, blending:THREE.AdditiveBlending, depthWrite:false });
   const box = (w,h,d,m)=> new THREE.Mesh(new THREE.BoxGeometry(w,h,d), m);
 
-  // ---- legs — player-scale, hip and knee joints
-  const hips = box(0.42,0.18,0.28, armor); hips.position.y = 0.95;
+  // ---- legs — player-scale, planted wide and a touch bowed (he stoops). Same hip/knee joints.
+  const hips = box(0.52,0.20,0.32, bark); hips.position.y = 0.92;
   const mkLeg = (side)=>{
-    const hip = new THREE.Object3D(); hip.position.set(side*0.14, 0.92, 0);
-    const thighGeo = new THREE.BoxGeometry(0.15,0.42,0.16); thighGeo.translate(0,-0.21,0);
+    const hip = new THREE.Object3D(); hip.position.set(side*0.18, 0.90, 0);
+    const thighGeo = new THREE.BoxGeometry(0.18,0.42,0.18); thighGeo.translate(0,-0.21,0);
     const thigh = new THREE.Mesh(thighGeo, cloth);
     const knee = new THREE.Object3D(); knee.position.set(0,-0.42,0);
-    const shinGeo = new THREE.BoxGeometry(0.14,0.40,0.14); shinGeo.translate(0,-0.20,0);
-    const shin = new THREE.Mesh(shinGeo, armor);
-    const foot = box(0.16,0.09,0.26, trim); foot.position.set(0,-0.44,0.05);
+    const shinGeo = new THREE.BoxGeometry(0.16,0.40,0.16); shinGeo.translate(0,-0.20,0);
+    const shin = new THREE.Mesh(shinGeo, bark);
+    const mossKnee = box(0.20,0.10,0.20, moss); mossKnee.position.y = -0.02; knee.add(mossKnee);
+    const foot = box(0.20,0.10,0.30, bark); foot.position.set(0,-0.44,0.06);
     knee.add(shin, foot);
     hip.add(thigh, knee);
     return { hip, knee };
   };
   const legL = mkLeg(-1), legR = mkLeg(1);
 
-  // ---- torso — compact cuirass, belt
-  const torso = box(0.52,0.62,0.28, armor); torso.position.y = 1.32;
-  const chest = box(0.40,0.30,0.08, trim); chest.position.set(0,1.46,0.15);
-  const belt  = box(0.54,0.10,0.30, cloth); belt.position.y = 1.04;
-  const beltGem = box(0.10,0.10,0.05, haloMat); beltGem.position.set(0,1.04,0.16);
+  // ---- torso — a broad, heavy trunk, swallowed at the shoulders by moss. Belt of bound relics.
+  const torso = box(0.62,0.66,0.34, bark); torso.position.y = 1.30;
+  const chest = box(0.46,0.26,0.10, moss); chest.position.set(0,1.42,0.18);
+  const belt  = box(0.64,0.12,0.36, cloth); belt.position.y = 1.00;
+  const beltGem = box(0.12,0.12,0.06, maceGlowMat); beltGem.position.set(0,1.00,0.19);
+  // rotted collar of growth mounding over the shoulders — the start of the hump silhouette
+  const collar = box(0.72,0.22,0.44, frond); collar.position.set(0,1.60,-0.02);
 
-  // ---- head on a neck joint
-  const neck = new THREE.Object3D(); neck.position.set(0,1.62,0);
-  const head = box(0.30,0.32,0.30, cloth); head.position.y = 0.16;
-  const face = box(0.26,0.20,0.05, trim); face.position.set(0,0.02,0.15); head.add(face);
-  const visor = box(0.20,0.06,0.03, visorMat); visor.position.set(0,0.03,0.17); head.add(visor);
-  neck.add(head);
+  // ---- head — a low, hooded skull thrust forward on a short neck. Reads hunched, not noble.
+  const neck = new THREE.Object3D(); neck.position.set(0,1.60,0.02);
+  const hood = box(0.34,0.34,0.36, cloth); hood.position.set(0,0.14,-0.02);
+  const skull = box(0.24,0.22,0.22, bone); skull.position.set(0,0.10,0.12); hood.add(skull);
+  const jaw = box(0.20,0.08,0.16, bone); jaw.position.set(0,-0.02,0.14); hood.add(jaw);
+  const visor = box(0.20,0.05,0.04, visorMat); visor.position.set(0,0.13,0.22); hood.add(visor);
+  const brow = box(0.30,0.08,0.16, frond); brow.position.set(0,0.28,0.02); hood.add(brow);  // moss over the crown
+  neck.add(hood);
 
-  // ---- halo — small ring above the head
-  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.24,0.025,8,24), haloMat);
-  halo.position.y = 2.02; halo.rotation.x = Math.PI/2 - 0.2;
-  halo.add(new THREE.Mesh(new THREE.TorusGeometry(0.15,0.012,6,20), innerMat));
+  // ---- halo — cracked and canted, hanging crooked over the bowed head. The top-level mesh is one
+  // broken arc (so boss.halo.material stays a real material for the recolour code); two more arcs
+  // are children sharing haloMat, so a single setHex retints the whole broken crown at once.
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.26,0.028,6,20, 1.55), haloMat);
+  for(const a0 of [2.2, 4.2]){
+    const seg = new THREE.Mesh(new THREE.TorusGeometry(0.26,0.028,6,18, 1.4), haloMat);
+    seg.rotation.z = a0; halo.add(seg);
+  }
+  halo.position.set(0.05,2.04,-0.04); halo.rotation.x = Math.PI/2 - 0.35; halo.rotation.z = 0.15;
 
-  // ---- arms — shoulder + elbow joints, player-scale
-  const upperArmGeo = new THREE.BoxGeometry(0.13,0.34,0.13); upperArmGeo.translate(0,-0.17,0);
-  const forearmGeo  = new THREE.BoxGeometry(0.12,0.32,0.12); forearmGeo.translate(0,-0.16,0);
+  // ---- arms — long and heavy, hanging low off stooped shoulders. Shoulder + elbow joints.
+  const upperArmGeo = new THREE.BoxGeometry(0.16,0.38,0.16); upperArmGeo.translate(0,-0.19,0);
+  const forearmGeo  = new THREE.BoxGeometry(0.15,0.36,0.15); forearmGeo.translate(0,-0.18,0);
   const mkArm = (side)=>{
-    const shoulder = new THREE.Object3D(); shoulder.position.set(side*0.34,1.52,0);
-    const pauldron = box(0.20,0.14,0.20, trim); pauldron.position.y = 0.05;
+    const shoulder = new THREE.Object3D(); shoulder.position.set(side*0.40,1.50,0);
+    const pauldron = box(0.28,0.20,0.28, frond); pauldron.position.y = 0.04;   // mossy shoulder mound
     const upperArm = new THREE.Mesh(upperArmGeo, cloth);
-    const elbow = new THREE.Object3D(); elbow.position.set(0,-0.34,0);
-    const forearm = new THREE.Mesh(forearmGeo, cloth);
-    const gaunt = box(0.15,0.14,0.16, armor); gaunt.position.y = -0.30;
+    const elbow = new THREE.Object3D(); elbow.position.set(0,-0.38,0);
+    const forearm = new THREE.Mesh(forearmGeo, bark);
+    const gaunt = box(0.18,0.16,0.20, bone); gaunt.position.y = -0.34;   // skeletal hand
     elbow.add(forearm, gaunt);
     shoulder.add(pauldron, upperArm, elbow);
     return { shoulder, elbow };
@@ -2928,48 +3012,64 @@ function buildMossMesh(){
   const armL = armInfoL.shoulder, armR = armInfoR.shoulder;
   const elbowL = armInfoL.elbow, elbowR = armInfoR.elbow;
 
-  // ---- the mace — short, flanged, glowing violet core. Hung from the elbow (the hand end).
+  // ---- the root-censer — a gnarled staff topped with a dripping, spore-lit cage. Hung from the
+  // hand (elbow). This is the Warden's implement: it seeds the floor, it does not swordfight.
   const mace = new THREE.Group();
-  const haft = box(0.06,0.42,0.06, cloth); haft.position.y = -0.24;
-  const headCore = box(0.20,0.20,0.20, armor); headCore.position.y = -0.48;
-  const flangeGeo = new THREE.BoxGeometry(0.30,0.14,0.06);
-  [0,Math.PI/2].forEach(r=>{
-    const f = new THREE.Mesh(flangeGeo, trim); f.position.y = -0.48; f.rotation.y = r;
-    mace.add(f);
-  });
-  const core = box(0.09,0.09,0.09, maceGlowMat); core.position.y = -0.48;
-  mace.add(haft, headCore, core);
-  mace.position.set(0,-0.32,0);
+  const haft = box(0.07,0.72,0.07, bark); haft.position.y = -0.30;
+  for(let i=0;i<3;i++){   // knots of growth up the shaft
+    const k = box(0.12,0.10,0.12, moss); k.position.set(0,-0.10-i*0.22,0); mace.add(k);
+  }
+  const cageCore = box(0.22,0.24,0.22, bark); cageCore.position.y = -0.72;
+  const cageMoss = box(0.30,0.14,0.30, frond); cageMoss.position.y = -0.60;
+  const core = box(0.13,0.13,0.13, maceGlowMat); core.position.y = -0.72;
+  // three spore drips hanging under the censer
+  for(const dx of [-0.09,0,0.09]){
+    const drip = box(0.04,0.16,0.04, maceGlowMat); drip.position.set(dx,-0.90,0); mace.add(drip);
+  }
+  mace.add(haft, cageCore, cageMoss, core);
+  mace.position.set(0,-0.36,0);
   elbowR.add(mace);
 
-  // ---- wings — smaller than Gabriel's, player-scale angel silhouette
+  // ---- the back-hump — a great mounded shroud of overgrowth that dominates the silhouette,
+  // with two drooping frond-clusters (wingL/wingR) hanging off it. This replaces the angel wings
+  // entirely: the Warden is bent under his own decay, not crowned by it.
+  const hump = box(0.66,0.60,0.46, frond); hump.position.set(0,1.52,-0.30);
+  const humpTop = box(0.50,0.34,0.34, moss); humpTop.position.set(0,1.86,-0.30);
   const mkWing = (side)=>{
     const w = new THREE.Group();
-    const nPrime = 6;
+    const nPrime = 5;
     for(let i=0;i<nPrime;i++){
-      const f = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.16, 1.60-i*0.18), feather);
-      f.position.set(0, i*0.11, -(0.65-i*0.06));
-      f.rotation.x = -0.10 - i*0.08;
-      f.rotation.y = side*0.04*i;
+      const f = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.9-i*0.12, 0.14), frond);
+      f.position.set(side*(0.04+i*0.05), -(0.35+i*0.05), -0.02);
+      f.rotation.z = side*(0.2 + i*0.12);   // droop outward and down — dead, heavy fronds
       w.add(f);
     }
-    const root = box(0.10,0.46,0.12, trim); root.position.set(0,0.42,0.02);
+    const root = box(0.16,0.30,0.16, moss); root.position.set(0,0.10,0);
     w.add(root);
     const glow = new THREE.Sprite(wingGlowMat);
-    glow.scale.set(0.7, 1.9, 1);
-    glow.position.set(0, 0.36, -0.25);
+    glow.scale.set(0.9, 1.4, 1);
+    glow.position.set(0, -0.2, -0.15);
     glow.raycast = function(){};   // decorative aura — never eats a shot meant for the body
     w.add(glow);
-    w.position.set(side*0.30, 1.42, 0.18);
-    w.rotation.y = -side*0.7;
+    w.position.set(side*0.34, 1.66, -0.34);
+    w.rotation.y = -side*0.25;
     return w;
   };
   const wingL = mkWing(-1), wingR = mkWing(1);
 
-  g.add(hips, legL.hip, legR.hip, torso, chest, belt, beltGem, neck, halo, armL, armR, wingL, wingR);
+  // ---- the miasma — a toxic cloud that clings to him, shown as ONE clean ground disc (no extra
+  // glow layers, so it reads as a single area). It pulses + scales to match the damage radius, which
+  // is driven in updateWarden. This is the tell for the aura that punishes hugging him.
+  const auraDisc = new THREE.Mesh(new THREE.CircleGeometry(3.0, 36),
+    new THREE.MeshBasicMaterial({ color:0x6fbf30, transparent:true, opacity:0.16,
+      side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false }));
+  auraDisc.rotation.x = -Math.PI/2; auraDisc.position.y = 0.06; auraDisc.raycast = function(){};
+
+  g.add(auraDisc, hips, legL.hip, legR.hip, torso, chest, belt, beltGem, collar, hump, humpTop,
+        neck, halo, armL, armR, wingL, wingR);
   return { g, halo, armR, armL, elbowL, elbowR, hipL:legL.hip, hipR:legR.hip,
-    kneeL:legL.knee, kneeR:legR.knee, neck, mace, wingL, wingR, visor, wingGlowMat,
-    accents:[trim, innerMat, wingGlowMat] };
+    kneeL:legL.knee, kneeR:legR.knee, neck, mace, wingL, wingR, visor, wingGlowMat, auraDisc,
+    accents:[moss, innerMat, wingGlowMat] };
 }
 // ---- CHOIR, the Hollow Verdict — a floating many-armed aberration. No legs (she never
 // touches the ground), a radial ring of arms around a shrouded core, a tattered tendril-robe
@@ -2984,6 +3084,7 @@ function buildChoirMesh(){
   const cloth = new THREE.MeshLambertMaterial({ color:0x0e0c14 });
   const gownTrim = new THREE.MeshLambertMaterial({ color:0xc9a8ff, emissive:0x2a1c4a });  // pale lilac accent
   const skin = new THREE.MeshLambertMaterial({ color:0x161320, emissive:0x0a0814 });
+  const faceMat = new THREE.MeshLambertMaterial({ color:0x6a5f7a, emissive:0x241c34 });  // lit — reads as a face against the dark arena
   const visorMat = new THREE.MeshBasicMaterial({ color:0x8fe0ff });
   const innerMat = new THREE.MeshBasicMaterial({ color:0xd0f0ff });
   const haloMat  = new THREE.MeshBasicMaterial({ color:0x6a4aa8 });
@@ -3009,25 +3110,38 @@ function buildChoirMesh(){
   const shoulders = box(0.62,0.12,0.26, armor); shoulders.position.y = 2.20;
   core.add(waist, bodice, bustL, bustR, collar, shoulders);
 
-  // ---- head on the neck pivot: face, glowing eye band, pointed crown, trailing hair
+  // ---- head on the neck pivot: lit face, twin glowing eyes, pointed crown, long weaving hair
   const neck = new THREE.Object3D(); neck.position.set(0,2.30,0);
-  const head = box(0.26,0.30,0.26, skin); head.position.y = 0.20; neck.add(head);
-  const visor = box(0.20,0.05,0.04, visorMat); visor.position.set(0,0.22,0.13); neck.add(visor);
+  const head = box(0.26,0.30,0.26, faceMat); head.position.y = 0.20; neck.add(head);
+  // brow ridge — small lit shelf above the eyes so the face reads as more than a flat box
+  const brow = box(0.24,0.05,0.05, faceMat); brow.position.set(0,0.28,0.135); neck.add(brow);
+  // twin glowing eyes — share visorMat so damageBoss/bossVisorReset/phase-2 recolor (which sets
+  // boss.visor.material.color) recolors both at once
+  const eyeGeo = new THREE.BoxGeometry(0.055,0.045,0.03);
+  const eyeL = new THREE.Mesh(eyeGeo, visorMat); eyeL.position.set(-0.07,0.225,0.135); neck.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, visorMat); eyeR.position.set( 0.07,0.225,0.135); neck.add(eyeR);
+  const visor = eyeR;   // generic rig handle
   // crown — three little spires
   [-0.09,0,0.09].forEach((x,i)=>{
     const sp = box(0.05, i===1?0.20:0.13, 0.05, gownTrim);
     sp.position.set(x, 0.40 + (i===1?0.03:0), 0); neck.add(sp);
   });
-  // hair — a segmented chain down the back that sways in choirPose
+  // hair — three long segmented strands (left/centre/right) trailing down the back. Each seg
+  // is tagged with its strand column + index so choirPose can weave them as a travelling
+  // S-curve instead of one stiff swinging chain.
   const hairSegs = [];
-  const hairRoot = new THREE.Object3D(); hairRoot.position.set(0,0.30,-0.13); neck.add(hairRoot);
-  let hp = hairRoot;
-  for(let i=0;i<4;i++){
-    const seg = new THREE.Object3D(); seg.position.y = (i===0?0:-0.20);
-    const strand = box(0.22 - i*0.02, 0.22, 0.06, cloth); strand.position.y = -0.11;
-    strand.position.z = -0.02;
-    seg.add(strand); hp.add(seg); hairSegs.push(seg); hp = seg;
-  }
+  [{x:-0.10,len:8},{x:0,len:9},{x:0.10,len:8}].forEach((sd,col)=>{
+    const strandRoot = new THREE.Object3D(); strandRoot.position.set(sd.x,0.28,-0.14); neck.add(strandRoot);
+    let hp = strandRoot;
+    for(let i=0;i<sd.len;i++){
+      const seg = new THREE.Object3D(); seg.position.y = (i===0?0:-0.17);
+      const w = Math.max(0.10 - i*0.007, 0.035);
+      const strand = box(w, 0.19, 0.045, cloth); strand.position.y = -0.095; strand.position.z = -0.015;
+      seg.add(strand); hp.add(seg);
+      seg.userData.col = col; seg.userData.i = i;
+      hairSegs.push(seg); hp = seg;
+    }
+  });
 
   const halo = new THREE.Mesh(new THREE.TorusGeometry(0.30,0.028,8,24), haloMat);
   halo.position.y = 2.92; halo.rotation.x = Math.PI/2 - 0.2;
@@ -3098,8 +3212,12 @@ function spawnBoss(kind){
   if (beam){ if(beam.mesh) scene.remove(beam.mesh); if(beam.warnMesh) scene.remove(beam.warnMesh); beam = null; }
   clearChoirBeams();
 
-  const parts = kind === 'moss' ? buildMossMesh() : kind === 'choir' ? buildChoirMesh() : buildBossMesh();
-  const hp = trueForm ? 9000 : kind === 'moss' ? 2600 * (1 + bossCount*0.4)
+  const parts = kind === 'moss' ? buildMossMesh() : kind === 'warden' ? buildWardenMesh()
+              : kind === 'choir' ? buildChoirMesh() : buildBossMesh();
+  // campaign order Gabriel(2200) -> Warden(2800) -> Moss(2900) -> Choir(3400); bossCount scales
+  // each further on top, so the descent's HP curve rises zone by zone
+  const hp = trueForm ? 9000 : kind === 'moss' ? 3150 * (1 + bossCount*0.4)
+           : kind === 'warden' ? 3050 * (1 + bossCount*0.4)
            : kind === 'choir' ? 3400 * (1 + bossCount*0.5) : 2200 * (1 + bossCount*0.6);
   boss = {
     ...parts, group: parts.g, true: trueForm, kind,
@@ -3111,9 +3229,17 @@ function spawnBoss(kind){
     dashDir: V3(), lastAtk:'', deadT:0
   };
   if (kind === 'choir') boss.group.scale.setScalar(1.15);   // radial body reads big even without a giant frame
+  if (kind === 'warden') boss.group.scale.setScalar(1.35);  // the Warden looms — a hunched mass, bigger than a man (old Moss stays player-scale)
   boss.group.position.set(
     THREE.MathUtils.clamp(player.pos.x, -(ARENA_W-16), ARENA_W-16), 26,
     THREE.MathUtils.clamp(player.pos.z - 24, -(ARENA_W-16), ARENA_W-16));
+  if (kind === 'moss'){
+    // the Second Judge does not descend from the sky — he tears up out of the grave-floor, close
+    // by. Start below ground; the 'enter' state rises him into view (see updateMoss).
+    boss.group.position.set(
+      THREE.MathUtils.clamp(player.pos.x + (player.pos.x < 0 ? 9 : -9), -(ARENA_W-16), ARENA_W-16), -3.6,
+      THREE.MathUtils.clamp(player.pos.z - 11, -(ARENA_W-16), ARENA_W-16));
+  }
   boss.group.traverse(o=>{ o.userData.boss = boss; });
   scene.add(boss.group);
 
@@ -3130,15 +3256,17 @@ function spawnBoss(kind){
 
   const bar = document.getElementById('bossbar');
   document.getElementById('bossname').textContent = kind === 'moss' ? 'MOSS — THE SECOND JUDGE'
+    : kind === 'warden' ? 'THE WARDEN OF THE CRYPT'
     : kind === 'choir' ? 'CHOIR — THE HOLLOW VERDICT' : 'GABRIEL — JUDGE OF THE HOLLOW KEEP';
   bar.style.display = 'block'; bar.classList.toggle('rage', trueForm);
   updateBossBar();
   whisperNow(trueForm ? 'GABRIEL, JUDGE OF THE HOLLOW KEEP' : kind === 'moss' ? 'MOSS DOES NOT WAIT'
+    : kind === 'warden' ? 'THE WARDEN TENDS THE DEAD'
     : kind === 'choir' ? 'THE CHOIR SPEAKS AS ONE' : 'HE HAS COME TO JUDGE YOU');
   closeGate();
   sfxHorn();
   shake = Math.max(shake, 0.6);
-  startMusic(kind === 'moss' ? 'moss' : 'gabriel');
+  startMusic(kind === 'moss' ? 'moss' : kind === 'warden' ? 'moss' : kind === 'choir' ? 'choir' : 'gabriel');
 }
 function updateBossBar(){
   document.getElementById('bossfill').style.transform =
@@ -3156,7 +3284,18 @@ function damageBoss(dmg, point, poiseMul){
   if (staggered) dmg *= 2;                 // punish window — twice the price
   else if (open) dmg *= 1.6;               // caught him in his recovery
 
-  // ---- burst cap: 350 damage inside 2s and he armours up for 2s — 75% off everything
+  // ---- long-range falloff (all bosses): full damage through close and MEDIUM range, then a gradual
+  // cut past 65% of the arena's cross-span, down to -60% at the far end — so you cannot chip a judge
+  // down from the opposite corner of the map. Uses live player<->boss distance.
+  const dfDist = Math.hypot(player.pos.x - boss.group.position.x, player.pos.z - boss.group.position.z);
+  const dfStart = ARENA_W * 1.3;           // ~73u = 65% of the ~2*ARENA_W arena span
+  const dfEnd   = ARENA_W * 2.0;           // ~112u = end to end
+  if (dfDist > dfStart){
+    const tf = Math.min(1, (dfDist - dfStart) / (dfEnd - dfStart));
+    dmg *= 1 - 0.6 * tf;                    // ramps 1.0 -> 0.4
+  }
+
+  // ---- burst cap: 325 damage inside 2s and he armours up for 2s — 75% off everything
   // while it holds, and it cannot be broken. You cannot delete a phase with one ult.
   const now = clock.elapsedTime;
   let warded = boss.dr > now;
@@ -3164,7 +3303,7 @@ function damageBoss(dmg, point, poiseMul){
   else {
     boss.burst = boss.burst.filter(b=> now - b.t < 2);
     const spent = boss.burst.reduce((s,b)=> s+b.d, 0);
-    const allow = Math.max(0, 350 - spent);
+    const allow = Math.max(0, 325 - spent);
     boss.burst.push({ t: now, d: dmg });
     if (dmg > allow){
       dmg = allow + (dmg - allow)*0.25;     // only the overflow is blunted
@@ -3178,7 +3317,7 @@ function damageBoss(dmg, point, poiseMul){
   // ---- phase wall: he cannot be knocked through a phase gate by one blow.
   // The hit stops at the threshold; the transition fires; you have to earn the next band.
   // Moss is a two-phase fight (one gate at 50%); Gabriel has the 30% rage gate too.
-  const phaseGates = boss.true ? [] : (boss.kind === 'moss' || boss.kind === 'choir') ? [boss.maxhp*0.5] : [boss.maxhp*0.5, boss.maxhp*0.30];
+  const phaseGates = boss.true ? [] : (boss.kind === 'moss' || boss.kind === 'warden' || boss.kind === 'choir') ? [boss.maxhp*0.5] : [boss.maxhp*0.5, boss.maxhp*0.30];
   for(const gateHp of phaseGates){
     if (boss.hp > gateHp && boss.hp - dmg < gateHp){
       dmg = boss.hp - gateHp;
@@ -3208,24 +3347,42 @@ function damageBoss(dmg, point, poiseMul){
     if (boss.poise <= 0) bossStagger();
   }
 
+  if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind === 'warden'){
+    boss.phase = 2;
+    boss.halo.material.color.setHex(0xbfff6a);
+    boss.visor.material.color.setHex(0xbfff6a);
+    boss.accentHex = 0x9fe060;
+    if (boss.accents) boss.accents.forEach(m=> m.color.setHex(0x9fe060));
+    document.getElementById('bossbar').classList.add('rage');
+    whisperNow('THE ROT SPREADS');
+    sfxHorn(); shake = Math.max(shake, 0.5);
+    burst(boss.group.position.clone().setY(2), 0x9fe060, 44, 15);
+    // the phase turn IS the first bloom — cut straight into it, same transient-clearing
+    // discipline as bossStagger so nothing mid-seed leaks through
+    boss.queue = []; boss.slammed = false;
+    boss._bloomN = 0; boss._bloomT = 0; boss._bloomGap = Math.random()*Math.PI*2;
+    if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
+    clearChoirBeams();
+    boss.state = 'bloom'; boss.t = 0;
+    startMusic('moss2');   // the Warden's phase-2 gate swaps to the mp3 rage track
+  }
   if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind === 'moss'){
+    // OLD Moss (the Second Judge): the phase turn IS the quake — a grave-splitting slam, purple rage
     boss.phase = 2;
     boss.halo.material.color.setHex(0xffe0ff);
     boss.visor.material.color.setHex(0xffe0ff);
     boss.accentHex = 0xe0b3ff;
     if (boss.accents) boss.accents.forEach(m=> m.color.setHex(0xe0b3ff));
     document.getElementById('bossbar').classList.add('rage');
-    whisperNow('HE ASCENDS TO FALL');
+    whisperNow('HE SPLITS THE GRAVE-FLOOR');
     sfxHorn(); shake = Math.max(shake, 0.5);
     burst(boss.group.position.clone().setY(2), 0xe0b3ff, 40, 14);
-    // the phase turn is a meteor, not just a recolor — cut straight into it, same
-    // transient-clearing discipline as bossStagger so nothing mid-attack leaks through
     boss.queue = []; boss.slammed = false;
     if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
     if (beam){ if(beam.mesh) scene.remove(beam.mesh); if(beam.warnMesh) scene.remove(beam.warnMesh); beam = null; }
-  clearChoirBeams();
-    boss.state = 'meteor'; boss.t = 0; boss._meteorLocked = false;
-    music.intensity = 1;
+    clearChoirBeams();
+    boss.state = 'quake'; boss.t = 0; boss._meteorLocked = false;
+    startMusic('moss2');
   }
   if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind === 'choir'){
     boss.phase = 2;
@@ -3239,9 +3396,8 @@ function damageBoss(dmg, point, poiseMul){
     burst(boss.group.position.clone().setY(2.4), 0xd98cff, 44, 15);
     boss.queue = []; boss.slammed = false;
     clearChoirBeams();
-    music.intensity = 1;
   }
-  if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind !== 'moss' && boss.kind !== 'choir'){
+  if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind !== 'moss' && boss.kind !== 'warden' && boss.kind !== 'choir'){
     boss.phase = 2;
     boss.halo.material.color.setHex(0xff5040);
     boss.visor.material.color.setHex(0xffb3a0);
@@ -3251,18 +3407,18 @@ function damageBoss(dmg, point, poiseMul){
     whisperNow('YOU HAVE ANGERED HIM');
     sfxHorn(); shake = Math.max(shake, 0.5);
     burst(boss.group.position.clone().setY(5), 0xff5040, 40, 14);
-    music.intensity = 1;
   }
-  if (boss.phase===2 && boss.hp <= boss.maxhp*0.30 && boss.kind !== 'moss' && boss.kind !== 'choir'){
+  if (boss.phase===2 && boss.hp <= boss.maxhp*0.30 && boss.kind !== 'moss' && boss.kind !== 'warden' && boss.kind !== 'choir'){
     boss.phase = 3;
     boss.halo.material.color.setHex(0xffffff);
     whisperNow('THE HALO BURNS');
     sfxHorn(); addShake(0.7); addHitstop(0.1);
     burst(boss.group.position.clone().setY(5), 0xffffff, 60, 18);
-    // he stops fighting alone
-    for(let i=0;i<2;i++){
+    // he stops fighting alone — no wisps; he calls up 1-2 of the heavy dead to grind you down
+    const heavies = 1 + (Math.random()<0.5?1:0);
+    for(let i=0;i<heavies;i++){
       const a = Math.random()*Math.PI*2;
-      makeMonster(V3(boss.group.position.x+Math.cos(a)*8, 0, boss.group.position.z+Math.sin(a)*8), 'wraith');
+      makeMonster(V3(boss.group.position.x+Math.cos(a)*8, 0, boss.group.position.z+Math.sin(a)*8), 'brute');
     }
   }
   if (boss.hp <= 0) killBoss();
@@ -3270,6 +3426,9 @@ function damageBoss(dmg, point, poiseMul){
 function killBoss(){
   if (boss.state === 'dead') return;      // he only dies once
   boss.state = 'dead'; boss.deadT = 0;
+  // safe passage the moment he falls — no dying to a stray shot/pool still in the air during the
+  // death throes or the walk to the way out. Cleared on portal entry / next zone / the crown-drop path.
+  player.portalInvuln = true;
   whisperNow('JUDGEMENT PASSED');
   sfxUlt(); sfxKill(); sfxVictory();
   shake = Math.max(shake, 1);
@@ -3278,7 +3437,7 @@ function killBoss(){
   document.getElementById('kills').textContent = player.kills;
 }
 // ---- shared boss-death cleanup + the campaign/duel fork. Called once, ~2-2.6s into the
-// 'dead' state, by whichever state machine (Gabriel's updateBoss or Moss's updateMoss) owns
+// 'dead' state, by whichever state machine (Gabriel's updateBoss or Moss's updateWarden) owns
 // the fallen boss. `where`/`floorY` are captured by the caller BEFORE boss is nulled here.
 function finishBossDeath(where, floorY, wasTrue){
   const wasDuel = duelMode;
@@ -3300,18 +3459,22 @@ function finishBossDeath(where, floorY, wasTrue){
 
   if (wasDuel){
     // practice fight over — a real choice screen, not the campaign win overlay
+    player.portalInvuln = false;
     stopMusic();
     duelWinGame(kind);
     return;
   }
   startMusic('keep');
-  offerBoon(true);   // a judge felled earns a CROWN, campaign-side
+  offerBoon(true, kind);   // a judge felled earns a CROWN from its OWN signature four
   if (zoneIndex < ZONES.length - 1){
-    // not the last level of the descent — a way down opens instead of the crown/gate finale
+    // not the last level of the descent — a way down opens instead of the crown/gate finale.
+    // portalInvuln stays ON here; it lifts the instant you step into the portal (updateDescentPortal).
     nextBossAt = Infinity;
     spawnDescentPortal(where);
     return;
   }
+  // final zone (or crown path): the fight is truly over and its hazards are cleared — safe passage ends
+  player.portalInvuln = false;
   if (wasTrue){
     // nobody was supposed to get here
     trueForm = false;
@@ -3319,10 +3482,10 @@ function finishBossDeath(where, floorY, wasTrue){
     crownTaken = false;
     whisperNow('THERE WAS NOTHING BEHIND THE MASK');
     addStyle(200); sfxKill();
-  } else if (kind === 'moss' || kind === 'choir'){
+  } else if (kind === 'moss' || kind === 'warden' || kind === 'choir'){
     // the deepest judge — no crown to gamble on, the way out simply opens
     openGate();
-    whisperNow(kind === 'choir' ? 'THE HOLLOW VERDICT IS SILENCED' : 'THE SECOND JUDGE HAS FALLEN');
+    whisperNow(kind === 'choir' ? 'THE HOLLOW VERDICT IS SILENCED' : kind === 'warden' ? 'THE WARDEN IS UNMADE' : 'THE SECOND JUDGE HAS FALLEN');
     addStyle(150); sfxKill();
   } else {
     dropCrown(where, floorY);        // take it, or find out
@@ -3360,7 +3523,7 @@ function updateDescentPortal(dt){
     scene.remove(descentPortal.g);
     descentPortal = null;
     loadZone(zoneIndex + 1);
-    whisperNow('YOU DESCEND');
+    whisperNow(ZONES[zoneIndex].intro || 'YOU DESCEND');
   }
 }
 // ---- solve where to aim so the shot and a running player arrive together.
@@ -3385,7 +3548,7 @@ function bossStagger(){
   whisperNow('HIS GUARD BREAKS');
   sfxHorn(); addShake(0.6); addHitstop(0.12); addStyle(20);
   burst(boss.group.position.clone().setY(3),
-    boss.kind==='moss' ? 0x9a5cff : boss.kind==='choir' ? 0x9fe0ff : 0xffe9a0, 40, 13);
+    boss.kind==='moss' ? 0x9a5cff : boss.kind==='warden' ? 0x8fe060 : boss.kind==='choir' ? 0x9fe0ff : 0xffe9a0, 40, 13);
 }
 
 // ---- attacks come in chains now, not one-then-wait
@@ -3418,6 +3581,7 @@ function bossEndAttack(){
 }
 function bossVisorReset(){
   if (boss.kind === 'moss') boss.visor.material.color.setHex(boss.phase>=2 ? 0xffe0ff : 0xb77bff);
+  else if (boss.kind === 'warden') boss.visor.material.color.setHex(boss.phase>=2 ? 0xbfff6a : 0x9fe060);
   else if (boss.kind === 'choir') boss.visor.material.color.setHex(boss.phase>=2 ? 0xffb3ec : 0x8fe0ff);
   else boss.visor.material.color.setHex(boss.phase>=2 ? 0xffb3a0 : 0x8fe0ff);
 }
@@ -3437,6 +3601,37 @@ function spawnShockwave(center, opts){
   ring.position.copy(center);
   scene.add(ring);
   shocks.push({ ring, r: 1.7, center: center.clone(), hit:false, max, dmg: o.dmg || 0 });
+}
+// ---- CROWN blast: the player-side AoE several signature crowns fire — hurts every living enemy
+// (and the boss) inside `radius` of `center`, with a themed spark burst. Mirrors the HELLFIRE /
+// REQUIEM splash loops. `_crownDepth` guards on-kill crown procs from cascading off their own blasts.
+let _crownDepth = 0;
+function crownBlast(center, radius, dmg, color){
+  _crownDepth++;
+  burst(center, color, 16, 9);
+  for(const m of monsters){
+    if (m.state === 'dead') continue;
+    if (m.group.position.distanceTo(center) < radius)
+      damageMonster(m, dmg, m.group.position.clone().setY(1.4), V3(0,0,1), false);
+  }
+  if (boss && boss.state !== 'dead' && boss.state !== 'enter'
+      && boss.group.position.distanceTo(center) < radius)
+    damageBoss(dmg, center);
+  _crownDepth--;
+}
+// ---- passive crown pulses: THE HALO (a holy ring that cuts nearby foes) and CROWN OF MIASMA
+// (a rot haze that gnaws at them). Steady, low, radius-limited ticks centred on the player.
+function updateCrownPassives(dt){
+  if (paused || dead || !started || !player) return;
+  const foot = ()=> player.pos.clone().setY(player.pos.y - player.eye + 0.9);
+  if (boons.haloPulse){
+    player._haloT = (player._haloT || 0) - dt;
+    if (player._haloT <= 0){ player._haloT = 0.7; crownBlast(foot(), 4.6, 26, 0xffe9a0); }
+  }
+  if (boons.miasma){
+    player._miasmaT = (player._miasmaT || 0) - dt;
+    if (player._miasmaT <= 0){ player._miasmaT = 0.55; crownBlast(foot(), 5.0, 15, 0x9fe060); }
+  }
 }
 function updateShocks(dt){
   for(let i=shocks.length-1;i>=0;i--){
@@ -3527,6 +3722,7 @@ function updatePools(dt){
   for(let i=pools.length-1;i>=0;i--){
     const q = pools[i];
     q.t -= dt;
+    if (q.grow){ q.r += q.grow*dt; if (q.r0) q.disc.scale.setScalar(q.r/q.r0); }   // creeping rot
     q.disc.material.opacity = 0.4 * Math.min(1, q.t/0.6) * (0.75 + 0.25*Math.sin(clock.elapsedTime*5));
     q.tick -= dt;
     if (q.foe){
@@ -3971,96 +4167,88 @@ function bossPose(dt, time){
   boss.wingGlowMat.opacity = 0.18 + flap*0.35 + (flapMul>1 ? 0.25 : 0);
 }
 
-// ------------------------------------------------------------------ MOSS — the second judge
-// player-scale, purple, faster and more relentless than Gabriel: short recoveries, a
-// chase-and-smash mace, a leap slam, and a sweeping laser. Two phases (50% gate), no true form.
-function mossQueueAttacks(){
-  // meteor only recurs in phase 2, and only in the pool (no opener bias) — rare by construction
-  const pool = boss.phase>=2 ? ['smash','leap','beam','mossdash','spin','meteor'] : ['smash','leap','beam','mossdash','spin'];
-  const len = boss.phase>=2 ? 3 : 2;   // relentless — he chains, he doesn't idle between hits
+// ------------------------------------------------------------------ MOSS — the Warden of the Crypt
+// NOT a second melee judge. A zoner who owns the floor: he seeds creeping rot-lanes, erupts spore
+// geysers under you, pins you with root-vines, punishes hugging with a toxic sweep, lobs homing
+// spores when you run, calls spitters up to harry you from range, and in phase 2 blooms the whole
+// hall. You win by staggering him and denying his board before the arena becomes unwalkable.
+// Two phases (50% gate), no true form.
+function wardenQueueAttacks(){
+  // bloom is the phase-2 climax — pool-only, never chained back-to-back (the last-attack filter)
+  const pool = boss.phase>=2 ? ['rot','erupt','sweep','lob','roots','bloom']
+                             : ['rot','erupt','sweep','lob','roots'];
+  const len = boss.phase>=2 ? 3 : 2;
   boss.queue = [];
   let last = boss.lastAtk;
   for(let i=0;i<len;i++){
     let a; do { a = pool[Math.random()*pool.length|0]; } while (a === last);
     last = a; boss.queue.push(a);
   }
-  // the opener answers the situation: close the gap when far, punish when already in his face
+  // the opener answers the situation: punish a hugger, pressure a runner, seed the floor mid-range
   const toP0 = V3(player.pos.x-boss.group.position.x, 0, player.pos.z-boss.group.position.z);
   const d0 = toP0.length();
-  if (d0 > 10 && boss.lastAtk !== 'mossdash') boss.queue[0] = 'mossdash';
-  else if (d0 < 3 && boss.lastAtk !== 'spin') boss.queue[0] = 'spin';
+  if (d0 < 4 && boss.lastAtk !== 'sweep') boss.queue[0] = 'sweep';
+  else if (d0 > 12 && boss.lastAtk !== 'lob') boss.queue[0] = 'lob';
 }
-function mossNextAttack(){
-  if (!boss.queue.length) mossQueueAttacks();
+function wardenNextAttack(){
+  if (!boss.queue.length) wardenQueueAttacks();
   const a = boss.queue.shift();
   boss.lastAtk = a;
-  boss.state = a; boss.t = 0; boss.dashHit = false; boss.slammed = false; boss._spinN = 0;
-  boss._meteorLocked = false;
+  boss.state = a; boss.t = 0; boss.slammed = false;
+  boss._geyserN = 0; boss._lobN = 0; boss._rotN = 0; boss._rotT = 0;
+  boss._bloomN = 0; boss._bloomT = 0; boss._bloomGap = Math.random()*Math.PI*2;
+  boss._sweepDir = Math.random() < 0.5 ? -1 : 1;
   boss.armR.rotation.z = 0;
-  if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
-  if (beam){ if(beam.mesh) scene.remove(beam.mesh); if(beam.warnMesh) scene.remove(beam.warnMesh); beam = null; }
+  if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }   // roots telegraph, if any
   clearChoirBeams();
 }
-function mossEndAttack(){
-  if (boss.queue.length){ mossNextAttack(); return; }
+function wardenEndAttack(){
+  if (boss.queue.length){ wardenNextAttack(); return; }
   boss.state = 'recover'; boss.t = 0;
-  boss.recT = boss.phase>=2 ? 0.18 : 0.38;   // short — he does not give you long to breathe
+  boss.recT = boss.phase>=2 ? 0.22 : 0.35;   // a short beat — he keeps the pressure on
   boss.visor.material.color.setHex(0xffffff);
 }
 
-// ---- the sweeping laser
-function mossStartBeam(){
-  const g = boss.group;
-  const toP = V3(player.pos.x-g.position.x, 0, player.pos.z-g.position.z);
-  const centerAngle = Math.atan2(toP.x, toP.z);
-  const dir = Math.random() < 0.5 ? -1 : 1;
-  beam = {
-    angle: centerAngle - dir*0.9,
-    sweepDir: dir,
-    halfWidth: boss.phase>=2 ? 0.15 : 0.11,
-    range: 28,
-    dmgPerSec: boss.phase>=2 ? 40 : 28,
-    state: 'charge', t: 0,
-    mesh: null, warnMesh: null
-  };
+// ---- a lingering rot patch on the floor. Reuses the shared `pools` list (updatePools ticks it):
+// stand in it and it burns twice a second. This is the Warden's whole language — taking ground away.
+function spawnRotPool(x, z, r, life, dmg, grow){
+  const y0 = player.onGround ? player.pos.y - player.eye : (boss ? boss.floorY : 0);
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 22),
+    new THREE.MeshBasicMaterial({ color:0x8fe060, transparent:true, opacity:0.4,
+      side:THREE.DoubleSide, depthWrite:false }));
+  disc.rotation.x = -Math.PI/2;
+  disc.position.set(x, y0+0.05, z);
+  scene.add(disc);
+  // grow > 0: the patch creeps outward over its life (units/sec) — the rot spreads, taking ground
+  pools.push({ x, z, y0, r, r0: r, t: life, max: life, dmg, tick:0, disc, grow: grow || 0 });
 }
-function updateBeam(dt){
-  if (!beam || !boss) return;
-  const origin = boss.group.position.clone().setY(boss.floorY + 1.3);
-  const dir = V3(Math.sin(beam.angle), 0, Math.cos(beam.angle));
-  if (beam.state === 'charge'){
-    if (beam.mesh){ scene.remove(beam.mesh); beam.mesh = null; }
-    if (!beam.warnMesh){
-      const geo = new THREE.BoxGeometry(0.06, 0.3, beam.range); geo.translate(0,0,beam.range/2);
-      beam.warnMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color:0xb77bff,
-        transparent:true, opacity:0.3, blending:THREE.AdditiveBlending, depthWrite:false }));
-      scene.add(beam.warnMesh);
-    }
-    beam.warnMesh.position.copy(origin);
-    beam.warnMesh.rotation.y = beam.angle;
-    beam.warnMesh.material.opacity = 0.2 + 0.25*Math.abs(Math.sin(clock.elapsedTime*10));
-    return;
-  }
-  if (beam.warnMesh){ scene.remove(beam.warnMesh); beam.warnMesh = null; }
-  if (!beam.mesh){
-    const geo = new THREE.BoxGeometry(beam.halfWidth*2*3.2, 0.35, beam.range); geo.translate(0,0,beam.range/2);
-    beam.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color:0xc99bff,
-      transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false }));
-    scene.add(beam.mesh);
-  }
-  beam.mesh.position.copy(origin);
-  beam.mesh.rotation.y = beam.angle;
-  beam.mesh.material.opacity = 0.62 + Math.random()*0.15;
-  if (Math.random() < dt*30) burst(origin.clone().addScaledVector(dir, beam.range*0.4), 0xc99bff, 2, 5);
-
-  const toP = V3(player.pos.x-origin.x, 0, player.pos.z-origin.z);
-  const dist = toP.length();
-  if (dist <= beam.range && Math.abs(player.pos.y - origin.y) < 3.5){
-    const playerAngle = Math.atan2(toP.x, toP.z);
-    let d = playerAngle - beam.angle;
-    while(d>Math.PI) d-=Math.PI*2; while(d<-Math.PI) d+=Math.PI*2;
-    if (Math.abs(d) <= beam.halfWidth) hurtPlayer(beam.dmgPerSec*dt, origin, 9*dt);
-  }
+// ---- a telegraphed spore geyser: a ring you see for ~0.9s, a lobbed glob from the censer, an
+// impact that bites inside its radius, and an acid patch left behind. Reuses the Spitter mortar.
+function spawnWardenGeyser(x, z, opts){
+  const p2 = boss.phase>=2, o = opts || {};
+  const org = boss.group.position.clone().setY((boss.floorY||0) + 2.2);
+  spawnMortar(x, z, org, {
+    tell:    o.tell    !== undefined ? o.tell    : (p2 ? 0.8 : 0.95),
+    radius:  o.radius  !== undefined ? o.radius  : 3.0,
+    dmg:     o.dmg     !== undefined ? o.dmg     : (p2 ? 38 : 28),
+    pool:    o.pool    !== undefined ? o.pool    : (p2 ? 5.5 : 4.5),
+    poolDmg: o.poolDmg !== undefined ? o.poolDmg : 8
+  }, false);
+}
+// ---- a spitter rises at range to harry you from afar — the answer to camping the far wall. Called
+// on a steady ~5s heartbeat (see updateWarden), capped so they harass rather than swarm. Tagged
+// _wardenRanged (its own cap) and _warden (cleared when the Warden falls).
+function wardenSpitter(){
+  const ang = Math.random()*Math.PI*2;
+  const rad = 20 + Math.random()*10;   // out at range, so it lobs from a distance
+  const x = THREE.MathUtils.clamp(player.pos.x + Math.sin(ang)*rad, -(ARENA_W-6), ARENA_W-6);
+  const z = THREE.MathUtils.clamp(player.pos.z + Math.cos(ang)*rad, -(ARENA_W-6), ARENA_W-6);
+  const m = makeMonster(V3(x,0,z), 'spitter');
+  m._warden = true; m._wardenRanged = true;
+  burst(V3(x,0.6,z), 0x8fe060, 24, 12);
+  spawnRotPool(x, z, 1.8, 3.0, 6, 0.15);   // rot wells up where it surfaces
+  whisperNow('SOMETHING RISES TO SPIT');
+  sfxHorn();
 }
 
 // ---- Choir's sweeping laser(s) — same charge/sweep math as Moss's beam, but tracked as a
@@ -4155,8 +4343,734 @@ function clearChoirBeams(){
     if (b.warnMesh) scene.remove(b.warnMesh);
   }
   choirBeams = [];
+  // slash-arc fx live on boss._slash (not a global list) — torn down here too, since this is
+  // already called from every spawn/death/reset/duel-end path
+  if (boss && boss._slash){
+    scene.remove(boss._slash.mesh);
+    boss._slash = null;
+  }
 }
 
+// ---- Choir's slash arcs — a swept, glowing crescent (horizontal or diagonal) she cuts through
+// melee range. mode 'h' lies flat at chest height; mode 'd' tilts ~45° for a downward diagonal
+// cut. The crescent sweeps in yaw across the player's bearing over a short active window, and
+// deals a single hit if the player's bearing is inside the swept span when it passes through.
+function spawnChoirSlash(mode){
+  const p2 = boss.phase>=2;
+  const dur = p2 ? 0.16 : 0.22;
+  const arcSpan = 1.7;                 // radians of crescent coverage
+  const sweepSpan = 1.9;               // total yaw swept across dur (wider than arcSpan so it always crosses the player)
+  const geo = new THREE.RingGeometry(2.0, 6.5, 28, 1, -arcSpan/2, arcSpan);
+  const mat = new THREE.MeshBasicMaterial({ color: p2?0xffb3ec:0x9fe0ff, transparent:true,
+    opacity:0.85, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = mode === 'd' ? (-Math.PI/2 + 0.8) : -Math.PI/2;
+  mesh.position.y = mode === 'd' ? -0.2 : -0.3;   // relative to boss.group, roughly chest height
+  boss.group.add(mesh);
+  const toP = V3(player.pos.x-boss.group.position.x, 0, player.pos.z-boss.group.position.z);
+  const centerAngle = Math.atan2(toP.x, toP.z) - boss.group.rotation.y;
+  const dir = Math.random()<0.5 ? 1 : -1;
+  boss._slash = { mesh, mode, dur, t:0, dir,
+    startAngle: centerAngle - dir*sweepSpan/2, sweepSpan, arcSpan,
+    dmg: p2 ? 44 : 30, reach: 6.5, hit:false };
+  sfxHorn();
+}
+function updateChoirSlash(dt){
+  const s = boss && boss._slash; if (!s) return;
+  s.t += dt;
+  const p = Math.min(1, s.t/s.dur);
+  const angle = s.startAngle + s.dir*s.sweepSpan*p;
+  s.mesh.rotation.z = -angle;   // ring lies in the group's local XZ (or tilted) plane — z-rotation spins it in-plane
+  s.mesh.material.opacity = 0.9 * (1 - p*0.3);
+  const scale = 0.7 + 0.3*Math.min(1, p*3);
+  s.mesh.scale.setScalar(scale);
+  if (!s.hit){
+    const g = boss.group;
+    const toP = V3(player.pos.x-g.position.x, 0, player.pos.z-g.position.z);
+    const dist = toP.length();
+    if (dist <= s.reach){
+      const playerAngle = Math.atan2(toP.x, toP.z) - g.rotation.y;
+      let d = playerAngle - angle;
+      while(d>Math.PI) d-=Math.PI*2; while(d<-Math.PI) d+=Math.PI*2;
+      if (Math.abs(d) <= s.arcSpan/2){
+        s.hit = true;
+        hurtPlayer(s.dmg, g.position, 6);
+        burst(player.pos.clone(), s.mode==='d'?0xffb3ec:0x9fe0ff, 10, 7);
+      }
+    }
+  }
+  if (p >= 1){
+    boss.group.remove(s.mesh);
+    boss._slash = null;
+  }
+}
+
+function updateWarden(dt, time){
+  if (!boss) return;
+  const g = boss.group;
+  boss.t += dt;
+  const toP = V3(player.pos.x-g.position.x, 0, player.pos.z-g.position.z);
+  const dist = toP.length();
+
+  boss.halo.rotation.z += dt*1.6;
+  if (player.onGround) boss.floorY = player.pos.y - player.eye;
+  const hover = boss.floorY + 0.2 + Math.sin(time*1.4)*0.05;   // grounded — he stands in the rot, he does not soar
+  if (boss.dr && clock.elapsedTime > boss.dr){
+    boss.dr = 0;
+    if (boss.accents) boss.accents.forEach(m=> m.color.setHex(boss.accentHex));
+  }
+  if (boss.state !== 'stagger' && boss.poise < boss.maxPoise)
+    boss.poise = Math.min(boss.maxPoise, boss.poise + 30*dt);   // knits slow — breaking his guard is the reward
+
+  // ---- MIASMA: one big burning zone clinging to him — a single clean disc, drawn to match the damage
+  // radius exactly. Hugging him is never free (ticks + slows), so you dip in to break his guard then
+  // back out. The disc is ALWAYS open while he is on the ground (both phases) — it never closes; only
+  // the DAMAGE goes dormant while he is staggered, so the punish window stays real.
+  const auraR = boss.phase>=2 ? 9 : 7;   // phase 1 keeps its own aura; phase 2's is ~25% smaller than before
+  const auraLive  = boss.state !== 'enter' && boss.state !== 'dead';
+  const auraHarms = auraLive && boss.state !== 'stagger';
+  if (boss.auraDisc){
+    boss.auraDisc.scale.setScalar(auraLive ? auraR/(3.0*(g.scale.x||1)) : 0.001);
+    boss.auraDisc.material.opacity = auraLive ? (boss.phase>=2?0.2:0.15)*(0.8+0.2*Math.sin(time*4)) : 0;
+  }
+  if (auraHarms){
+    if (dist < auraR && Math.abs((player.pos.y-player.eye) - boss.floorY) < 3){
+      player.slowT = 0.12;
+      boss._auraTick = (boss._auraTick || 0) - dt;
+      if (boss._auraTick <= 0){
+        boss._auraTick = 0.35;
+        hurtPlayer(boss.phase>=2 ? 11 : 8, g.position.clone().setY(boss.floorY+1.2));
+        burst(player.pos.clone().setY(player.pos.y-0.4), 0x8fe060, 4, 5);
+      }
+    }
+    // ---- phase-2 downpour: he keeps lobbing a big spore glob at a RANDOM spot every 3s — a large,
+    // lingering (6s) pool. Random by design, so it is pressure and texture, never a precise trap.
+    if (boss.phase>=2){
+      boss._p2poolT = (boss._p2poolT === undefined ? 3 : boss._p2poolT) - dt;
+      if (boss._p2poolT <= 0){
+        boss._p2poolT = 3;
+        const rx = (Math.random()*2-1)*(ARENA_W-8), rz = (Math.random()*2-1)*(ARENA_W-8);
+        spawnWardenGeyser(rx, rz, { tell: 1.0, radius: 4.6, pool: 6, dmg: 30 });   // slight campaign buff (was 22 -> 26 -> 30)
+      }
+    }
+    // ---- ranged heartbeat: he calls spitters up at the arena's edge so camping the far wall is
+    // never safe. The frequency RAMPS as he bleeds — 5s at full hp down to 1s by 10% — and the cap
+    // climbs with it (2 -> 5), so his last stand is a storm of spitters. A little chaos, by design.
+    const frac = boss.hp / boss.maxhp;
+    const interval = 1 + 4 * THREE.MathUtils.clamp((frac - 0.1) / 0.9, 0, 1);
+    const cap = 2 + Math.round((1 - frac) * 3);
+    boss._rangedT = (boss._rangedT === undefined ? interval : boss._rangedT) - dt;
+    if (boss._rangedT <= 0){
+      boss._rangedT = interval;
+      let ranged = 0;
+      for(const m of monsters) if (m._wardenRanged && m.state!=='dead') ranged++;
+      if (ranged < cap) wardenSpitter();
+    }
+  }
+
+  do {
+
+  if (boss.state === 'dead'){
+    boss.deadT += dt;
+    g.rotation.z = Math.min(1.3, boss.deadT*0.8);
+    g.position.y = Math.max(0.3, g.position.y - dt*2.6);
+    if (Math.random() < dt*14) burst(g.position.clone().setY(1.0+Math.random()*1.4), 0x8fe060, 6, 8);
+    if (boss.deadT > 2.2){
+      burst(g.position.clone().setY(1.0), 0xbfff6a, 50, 14);
+      // the grave-crawlers he raised fall still with him
+      for(let mi=monsters.length-1; mi>=0; mi--){
+        if (monsters[mi]._warden){ scene.remove(monsters[mi].group); monsters.splice(mi,1); }
+      }
+      const where = g.position.clone();
+      const deathFloorY = boss.floorY;
+      finishBossDeath(where, deathFloorY, false);
+    }
+    break;
+  }
+
+  if (boss.state === 'enter'){
+    g.position.y = Math.max(hover, g.position.y - dt*11);
+    faceBoss(toP, dt, 3);
+    if (g.position.y <= hover + 0.1){
+      boss.state = 'idle'; boss.atkT = 0.5;
+      burst(g.position.clone().setY(0.4), 0x8fe060, 28, 10);
+      // a burst of spores on landing — no scattered patches, his miasma disc is the only zone under him
+      shake = Math.max(shake, 0.4); addHitstop(0.05);
+    }
+    break;
+  }
+
+  if (boss.state === 'recover'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+    faceBoss(toP, dt, 2.5);
+    boss.armR.rotation.x *= Math.max(0, 1 - 8*dt);
+    boss.armL.rotation.x *= Math.max(0, 1 - 8*dt);
+    if (Math.random() < dt*6) burst(g.position.clone().setY(1.5), 0x9fe060, 2, 4);
+    boss.recT -= dt;
+    if (boss.recT <= 0){
+      bossVisorReset();
+      boss.state = 'idle';
+      boss.atkT = boss.phase>=2 ? 0.18 : 0.3;
+    }
+    break;
+  }
+
+  // ---- idle: he holds a threatening mid-range and drifts, never rushing. He does his work with
+  // the floor, so he keeps a lane open to seed rather than closing to swing.
+  if (boss.state === 'idle'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 4*dt);
+    faceBoss(toP, dt, 5);
+    const desired = boss.phase>=2 ? 14 : 8;   // in p2 he holds outside his own (huge) aura, not inside it
+    const dir = toP.clone().normalize();
+    const spd = boss.phase>=2 ? 6 : 5;
+    if (dist > desired+2) g.position.addScaledVector(dir, spd*dt);
+    else if (dist < desired-2) g.position.addScaledVector(dir, -spd*dt);
+    else {
+      const tan = V3(-dir.z,0,dir.x).multiplyScalar(boss.strafe);
+      g.position.addScaledVector(tan, spd*0.6*dt);
+      if (Math.random() < dt*0.6) boss.strafe *= -1;
+    }
+    clampBossPos();
+    boss.atkT -= dt;
+    if (boss.atkT <= 0) wardenNextAttack();
+    break;
+  }
+
+  // ---- rot (CREEPING ROT): plants the censer and drives a marching lane of acid outward along
+  // your bearing at the moment of the slam. Step off the lane. Phase 2 fans it into three lanes.
+  if (boss.state === 'rot'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+    const wind = 0.5;
+    if (boss.t < wind){
+      faceBoss(toP, dt, 6);
+      boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x||0, -1.7, Math.min(1,9*dt));
+      boss._rotDir = toP.clone().normalize();   // tracks until it locks at the slam
+      if (Math.random() < dt*10) burst(g.position.clone().setY(boss.floorY+1.3), 0x8fe060, 2, 5);
+    } else if (!boss.slammed){
+      boss.slammed = true;
+      boss.armR.rotation.x = 0.5;
+      sfxUlt(); addShake(0.5); addHitstop(0.05);
+      burst(g.position.clone().setY(boss.floorY+0.4), 0x8fe060, 34, 12);
+      boss._rotN = 0; boss._rotT = 0;
+    } else if (boss._rotN < (boss.phase>=2 ? 13 : 11)){
+      boss._rotT -= dt;
+      if (boss._rotT <= 0){
+        boss._rotT = 0.08;                    // races out faster
+        boss._rotN++;
+        const step = 3.0 + boss._rotN*4.6;    // reaches the wall (~53u) — the lane crosses the entire hall
+        const arcs = boss.phase>=2 ? [-0.4, 0, 0.4] : [0];
+        for(const off of arcs){
+          const d = boss._rotDir.clone().applyAxisAngle(V3(0,1,0), off);
+          const px = THREE.MathUtils.clamp(g.position.x + d.x*step, -(ARENA_W-4), ARENA_W-4);
+          const pz = THREE.MathUtils.clamp(g.position.z + d.z*step, -(ARENA_W-4), ARENA_W-4);
+          spawnRotPool(px, pz, boss.phase>=2 ? 2.6 : 2.4, boss.phase>=2 ? 5.0 : 4.5, 12, 0.25);
+          burst(V3(px, boss.floorY+0.3, pz), 0x8fe060, 8, 8);
+        }
+        sfxHit(false); addShake(0.12);
+      }
+    } else {
+      boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x, 0, Math.min(1,6*dt));
+      if (boss.t > wind + (boss.phase>=2?13:11)*0.08 + 0.4) wardenEndAttack();
+    }
+    break;
+  }
+
+  // ---- erupt (GRAVE BLOOM): telegraphed spore geysers, the first under your feet and the rest
+  // scattered around you. Reuses the Spitter mortar (ring tell -> lobbed glob -> patch). Keep moving.
+  if (boss.state === 'erupt'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+    faceBoss(toP, dt, 3);
+    boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x||0, -1.2, Math.min(1,8*dt));
+    const n = boss.phase>=2 ? 5 : 3, per = 0.22;
+    if (boss._geyserN < n && boss.t > 0.35 + boss._geyserN*per){
+      boss._geyserN++;
+      let tx = player.pos.x, tz = player.pos.z;
+      if (boss._geyserN > 1){ const a=Math.random()*Math.PI*2, r=3+Math.random()*8; tx+=Math.sin(a)*r; tz+=Math.cos(a)*r; }
+      spawnWardenGeyser(THREE.MathUtils.clamp(tx,-(ARENA_W-4),ARENA_W-4),
+                        THREE.MathUtils.clamp(tz,-(ARENA_W-4),ARENA_W-4), { radius: 3.6 });
+    }
+    if (boss.t > 0.35 + n*per + 1.2){ boss.armR.rotation.x = 0; wardenEndAttack(); }
+    break;
+  }
+
+  // ---- roots (GRASPING DEAD): his signature. A ring blooms at your feet, tracks you, then locks;
+  // vines erupt and PIN you for a beat. You can still turn and shoot, but you cannot walk out of the
+  // geysers and rot around you — so pre-dodge the lock, or dash to break it. This is the "gotcha".
+  if (boss.state === 'roots'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+    faceBoss(toP, dt, 4);
+    boss.armL.rotation.x = THREE.MathUtils.lerp(boss.armL.rotation.x||0, -1.6, Math.min(1,8*dt));
+    boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x||0, -1.6, Math.min(1,8*dt));
+    const tell = boss.phase>=2 ? 0.7 : 0.95;
+    if (boss.t < tell){
+      if (!boss._leapRing){
+        boss._leapTarget = player.pos.clone();
+        const ring = new THREE.Mesh(new THREE.RingGeometry(1.7,2.2,28),
+          new THREE.MeshBasicMaterial({ color:0x8fe060, transparent:true, opacity:0.55, side:THREE.DoubleSide }));
+        ring.rotation.x = -Math.PI/2;
+        scene.add(ring); boss._leapRing = ring;
+      }
+      if (boss.t < tell-0.18) boss._leapTarget.copy(player.pos);   // tracks, then locks — outrun the lock
+      boss._leapRing.position.copy(boss._leapTarget).setY(boss.floorY+0.06);
+      boss._leapRing.material.opacity = 0.35 + 0.4*Math.abs(Math.sin(clock.elapsedTime*12));
+    } else if (!boss.slammed){
+      boss.slammed = true;
+      const tp = boss._leapTarget;
+      if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
+      sfxUlt(); addShake(0.5); addHitstop(0.05);
+      burst(tp.clone().setY(boss.floorY+0.4), 0x6f9a3a, 34, 12);
+      for(let k=0;k<6;k++){ const a=k/6*Math.PI*2; burst(tp.clone().add(V3(Math.sin(a)*1.4,0.3,Math.cos(a)*1.4)), 0x4c6a2c, 4, 9); }
+      spawnRotPool(tp.x, tp.z, 2.4, boss.phase>=2?4.5:3.5, 12, 0.2);
+      if (Math.hypot(player.pos.x-tp.x, player.pos.z-tp.z) < 2.3){
+        player.rootT = boss.phase>=2 ? 0.85 : 0.65;
+        hurtPlayer(boss.phase>=2 ? 18 : 12, tp.clone().setY(boss.floorY+1));
+        whisperNow('THE DEAD GRASP YOU');
+      }
+    } else if (boss.t > tell + 0.7){
+      boss.armL.rotation.x = 0; boss.armR.rotation.x = 0;
+      wardenEndAttack();
+    }
+    break;
+  }
+
+  // ---- sweep (ROTTING ARC): the answer to hugging. A wide frontal censer swing that bites in a
+  // short arc and leaves a crescent of rot in front of him. No body-spin — the arm carries it.
+  if (boss.state === 'sweep'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 6*dt);
+    const wind = 0.35, swing = 0.28;
+    if (boss.t < wind){
+      faceBoss(toP, dt, 8);
+      boss.armR.rotation.x = -1.0;
+      boss.armR.rotation.z = THREE.MathUtils.lerp(boss.armR.rotation.z||0, boss._sweepDir*1.4, Math.min(1,10*dt));
+    } else if (boss.t < wind + swing){
+      const sp = (boss.t - wind)/swing;
+      boss.armR.rotation.z = boss._sweepDir*1.4 - boss._sweepDir*2.8*sp;
+      if (!boss.slammed && sp > 0.35){
+        boss.slammed = true;
+        sfxUlt(); addShake(0.4); addHitstop(0.05);
+        burst(g.position.clone().setY(boss.floorY+0.9), 0x8fe060, 26, 11);
+        const reach = boss.phase>=2 ? 4.2 : 3.6;
+        const fwd = V3(Math.sin(g.rotation.y),0,Math.cos(g.rotation.y));
+        const toPl = V3(player.pos.x-g.position.x,0,player.pos.z-g.position.z);
+        if (toPl.length() < reach && fwd.dot(toPl.clone().normalize()) > -0.1)
+          hurtPlayer(boss.phase>=2 ? 34 : 24, g.position);
+        for(const off of [-0.5, 0, 0.5]){
+          const d = fwd.clone().applyAxisAngle(V3(0,1,0), off);
+          spawnRotPool(g.position.x+d.x*3, g.position.z+d.z*3, 2.0, 4.0, 12, 0.2);
+        }
+      }
+    } else if (boss.t > wind + swing + 0.25){
+      boss.armR.rotation.z = 0;
+      wardenEndAttack();
+    }
+    break;
+  }
+
+  // ---- lob (SPORE VOLLEY): when you run, he answers at range — a small fan of slow, gently
+  // homing spore orbs. Running is never fully free, but a hard dodge still beats them.
+  if (boss.state === 'lob'){
+    g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+    faceBoss(toP, dt, 5);
+    boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x||0, -1.0, Math.min(1,8*dt));
+    const shots = boss.phase>=2 ? 3 : 2, per = 0.28;
+    if (boss._lobN < shots && boss.t > 0.3 + boss._lobN*per){
+      boss._lobN++;
+      const org = g.position.clone().setY(boss.floorY+1.6);
+      const spd = boss.phase>=2 ? 17 : 14;
+      const dir = interceptDir(org, spd, 0.8);
+      const spread = boss.phase>=2 ? 3 : 2;
+      for(let i=0;i<spread;i++){
+        const o = (i-(spread-1)/2)*0.14;
+        const d = dir.clone().applyAxisAngle(V3(0,1,0), o).normalize();
+        spawnEnemyOrb(org.clone(), d.multiplyScalar(spd), boss.phase>=2?28:20, 0x9fe060, 0.32,
+                      { home: boss.phase>=2?0.9:0.5, homeFor:0.7 });
+      }
+      burst(org, 0x8fe060, 6, 6); sfxUlt();
+    }
+    if (boss.t > 0.3 + shots*per + 0.4){ boss.armR.rotation.x = 0; wardenEndAttack(); }
+    break;
+  }
+
+  // ---- bloom (THE CRYPT BLOOMS): the phase-2 climax. He pulls to the centre, rises, and radiates
+  // expanding rings of geysers outward — each ring leaving a rotating safe wedge to run through.
+  // This is the "clear the board or die" beat that Moss never had.
+  if (boss.state === 'bloom'){
+    const riseDur = 0.9;
+    if (boss.t < riseDur){
+      faceBoss(toP, dt, 2);
+      g.position.x += (0 - g.position.x) * Math.min(1, 3*dt);
+      g.position.z += (0 - g.position.z) * Math.min(1, 3*dt);
+      g.position.y += ((hover+3) - g.position.y) * Math.min(1, 4*dt);
+      boss.armL.rotation.x = -2.4; boss.armR.rotation.x = -2.4;
+      if (boss.t < 0.06){ whisperNow('THE CRYPT BLOOMS'); addShake(0.5); }
+      if (Math.random() < dt*24) burst(g.position.clone(), 0x8fe060, 3, 7);
+    } else if (boss._bloomN < 4){
+      boss._bloomT -= dt;
+      if (boss._bloomT <= 0){
+        boss._bloomT = 0.5;
+        boss._bloomN++;
+        const ring = boss._bloomN;
+        const rad = 8 + ring*9;             // 17u out to 44u — the far 53u ring was dead space, dropped
+        // spacing (2pi/1.2 = 5.24u) sits just inside the geyser diameter (2*2.9=5.8u), so the ring's
+        // patches OVERLAP into one solid sweeping wall — no gaps but the wedge. Pools now LINGER (2.5s).
+        const count = Math.round(rad * 1.2);
+        for(let i=0;i<count;i++){
+          const a = i/count*Math.PI*2 + ring*0.4;
+          let da = a - boss._bloomGap; while(da>Math.PI)da-=Math.PI*2; while(da<-Math.PI)da+=Math.PI*2;
+          if (Math.abs(da) < 0.78) continue;  // one wide, rotating safe wedge to run through — the only gap
+          const x = Math.sin(a)*rad, z = Math.cos(a)*rad;
+          spawnWardenGeyser(THREE.MathUtils.clamp(x,-(ARENA_W-4),ARENA_W-4),
+                            THREE.MathUtils.clamp(z,-(ARENA_W-4),ARENA_W-4),
+                            { tell: 0.7, pool: 2.5, dmg: 30, radius: 4.35 });   // signature: +50% spheres/pools
+        }
+        // the CENTRE burns too — right under where he lands, so it is never a safe pocket. A blast at
+        // the origin plus a tight inner ring (honouring the same wedge) on the first beat.
+        if (ring === 1){
+          spawnWardenGeyser(0, 0, { tell: 0.7, pool: 2.5, dmg: 30, radius: 4.8 });   // signature: +50% centre blast
+          const ic = 8;
+          for(let i=0;i<ic;i++){
+            const a = i/ic*Math.PI*2;
+            let da = a - boss._bloomGap; while(da>Math.PI)da-=Math.PI*2; while(da<-Math.PI)da+=Math.PI*2;
+            if (Math.abs(da) < 0.78) continue;
+            spawnWardenGeyser(Math.sin(a)*6, Math.cos(a)*6, { tell: 0.7, pool: 2.5, dmg: 30, radius: 4.35 });   // signature: +50% inner ring
+          }
+        }
+        boss._bloomGap += 0.7;
+        sfxHorn(); addShake(0.3);
+      }
+    } else if (boss.t > riseDur + 4*0.5 + 1.4){
+      boss.armL.rotation.x = 0; boss.armR.rotation.x = 0;
+      wardenEndAttack();
+    }
+    break;
+  }
+
+  if (boss.state === 'stagger'){
+    boss.stagT += dt;
+    g.position.y = Math.max(0.5, g.position.y - dt*4);
+    g.rotation.z = Math.sin(boss.stagT*9)*0.1;
+    if (Math.random() < dt*10) burst(g.position.clone().setY(1.4+Math.random()*1), 0x8fe060, 3, 5);
+    if (boss.stagT > 3.4){
+      g.rotation.z = 0;
+      boss.maxPoise = Math.round(boss.maxPoise*1.3);
+      boss.poise = boss.maxPoise;
+      sfxHorn(); addShake(0.4);
+      wardenEndAttack();
+    }
+    break;
+  }
+
+  } while(false);
+
+  if (boss && boss.state !== 'dead') wardenPose(dt, time);
+}
+// ---- the Warden's secondary motion: a permanent forward stoop, bowed legs, a censer arm that
+// tucks and extends with each seeding, and the two frond-clusters drooping off his back-hump.
+function wardenPose(dt, time){
+  if (!boss || !boss.elbowR || boss.state === 'dead') return;
+  const g = boss.group, s = boss.state;
+
+  // legs: always a little bent (he stoops), bracing harder on committed attacks
+  let hipT = -0.12, kneeT = 0.4, legRate = 6;
+  if (s === 'sweep' || s === 'rot'){ hipT = -0.3; kneeT = 0.7; legRate = 8; }
+  else if (s === 'roots' || s === 'erupt' || s === 'lob'){ hipT = -0.2; kneeT = 0.5; }
+  else if (s === 'bloom'){ hipT = -0.5; kneeT = 1.1; legRate = 9; }
+  const sway = Math.sin(time*1.6)*0.05;
+  boss.hipL.rotation.x = THREE.MathUtils.lerp(boss.hipL.rotation.x, hipT+sway, Math.min(1, legRate*dt));
+  boss.hipR.rotation.x = THREE.MathUtils.lerp(boss.hipR.rotation.x, hipT-sway, Math.min(1, legRate*dt));
+  boss.kneeL.rotation.x = THREE.MathUtils.lerp(boss.kneeL.rotation.x, kneeT, Math.min(1, legRate*dt));
+  boss.kneeR.rotation.x = THREE.MathUtils.lerp(boss.kneeR.rotation.x, kneeT, Math.min(1, legRate*dt));
+
+  // neck: a heavy permanent stoop, head thrust low and forward, tracking you
+  const toP = V3(player.pos.x-g.position.x, 0, player.pos.z-g.position.z);
+  let dYaw = Math.atan2(toP.x, toP.z) - g.rotation.y;
+  while(dYaw>Math.PI) dYaw-=Math.PI*2; while(dYaw<-Math.PI) dYaw+=Math.PI*2;
+  if (s === 'stagger'){
+    boss.neck.rotation.y = THREE.MathUtils.lerp(boss.neck.rotation.y, 0, Math.min(1,4*dt));
+    boss.neck.rotation.x = THREE.MathUtils.lerp(boss.neck.rotation.x, 0.1, Math.min(1,4*dt));
+  } else {
+    boss.neck.rotation.y = THREE.MathUtils.lerp(boss.neck.rotation.y, THREE.MathUtils.clamp(dYaw*0.5,-0.4,0.4), Math.min(1,6*dt));
+    boss.neck.rotation.x = THREE.MathUtils.lerp(boss.neck.rotation.x, 0.45, Math.min(1,6*dt));
+  }
+
+  // right elbow: the censer tucks in on a wind-up and extends out through a swing/seed, tracked
+  // live against the shoulder so it reads as one motion (same decoupling trick as the other bosses)
+  if (boss._phiR === undefined) boss._phiR = 1.0;
+  let phiTargetR = 1.0;
+  if (s === 'rot') phiTargetR = 0.5;
+  else if (s === 'erupt' || s === 'lob') phiTargetR = 0.7;
+  else if (s === 'roots') phiTargetR = 1.4;
+  else if (s === 'sweep') phiTargetR = 1.5;
+  else if (s === 'bloom') phiTargetR = 1.7;
+  boss._phiR = THREE.MathUtils.lerp(boss._phiR, phiTargetR, Math.min(1, 9*dt));
+  boss.elbowR.rotation.x = boss._phiR - boss.armR.rotation.x;
+  boss.elbowL.rotation.x = THREE.MathUtils.lerp(boss.elbowL.rotation.x, 0.4, Math.min(1,6*dt));
+
+  // back-fronds: droop and sway, flaring wide when he raises the dead or blooms the hall
+  const flare = (s === 'bloom' || s === 'roots') ? 0.5 : 0;
+  boss.wingL.rotation.z = THREE.MathUtils.lerp(boss.wingL.rotation.z,  0.2 - flare + Math.sin(time*2.2)*0.08, Math.min(1,5*dt));
+  boss.wingR.rotation.z = THREE.MathUtils.lerp(boss.wingR.rotation.z, -0.2 + flare - Math.sin(time*2.2)*0.08, Math.min(1,5*dt));
+  const flap = Math.abs(Math.sin(time*2.4));
+  boss.wingGlowMat.opacity = 0.14 + flap*0.26 + (s === 'bloom' ? 0.3 : 0);
+  // (the miasma disc's scale + opacity are driven authoritatively in updateWarden, matched to the damage radius)
+}
+
+
+// ===================================================================================
+// MOSS — THE SECOND JUDGE (restored). The original melee judge: a purple winged mace-boss
+// with a chase-smash, leap slam, dash, spin, sweeping beam and a phase-2 meteor. Kind "moss"
+// (campaign zone 1). The reworked zoner lives on as kind "warden" (duel only). Both keep the
+// generic rig/damageBoss/bossStagger/bossVisorReset contract.
+// ===================================================================================
+function buildMossMesh(){
+  // MOSS — THE SECOND JUDGE, re-imagined: not a purple Gabriel clone but a hunched tomb-warden.
+  // A stooped, heavy-shouldered thing of grave-iron and glowing violet sculk, a horned skull under
+  // a torn hood, ragged membrane wings and a two-handed maul. Same rig contract as before, so the
+  // whole state machine / damageBoss / stagger / visor code drives it unchanged.
+  const g = new THREE.Group();
+  const dark   = new THREE.MeshLambertMaterial({ color:0x241436, emissive:0x0b0518 });  // grave-iron, near black-violet
+  const armor  = new THREE.MeshLambertMaterial({ color:0x452a72, emissive:0x160a2e });  // purple plate
+  const cloth  = new THREE.MeshLambertMaterial({ color:0x150e1f });                       // torn shroud
+  const bone   = new THREE.MeshLambertMaterial({ color:0x6a4aa8 });                       // pale horn / growth
+  const trim   = new THREE.MeshLambertMaterial({ color:0x8a5cff, emissive:0x2a1552 });    // accent plate (accents[0])
+  const veinMat  = new THREE.MeshBasicMaterial({ color:0xb77bff });                        // glowing sculk veins
+  const visorMat = new THREE.MeshBasicMaterial({ color:0xb77bff });
+  const innerMat = new THREE.MeshBasicMaterial({ color:0xd9b8ff });
+  const haloMat  = new THREE.MeshBasicMaterial({ color:0x9a5cff });
+  const maceGlowMat = new THREE.MeshBasicMaterial({ color:0xc99bff });
+  const wingGlowMat = new THREE.SpriteMaterial({ map: makeGlowTexture(), color:0xb77bff,
+    transparent:true, opacity:0.25, blending:THREE.AdditiveBlending, depthWrite:false });
+  const box = (w,h,d,m)=> new THREE.Mesh(new THREE.BoxGeometry(w,h,d), m);
+
+  // ---- legs — planted, slightly bent, heavier than a man's. Hip + knee joints (pose drives these).
+  const hips = box(0.54,0.22,0.34, dark); hips.position.y = 0.92;
+  const mkLeg = (side)=>{
+    const hip = new THREE.Object3D(); hip.position.set(side*0.17, 0.90, 0);
+    const thighGeo = new THREE.BoxGeometry(0.19,0.44,0.20); thighGeo.translate(0,-0.22,0);
+    const thigh = new THREE.Mesh(thighGeo, cloth);
+    const knee = new THREE.Object3D(); knee.position.set(0,-0.44,0);
+    const shinGeo = new THREE.BoxGeometry(0.17,0.42,0.17); shinGeo.translate(0,-0.21,0);
+    const shin = new THREE.Mesh(shinGeo, armor);
+    const foot = box(0.20,0.11,0.32, dark); foot.position.set(0,-0.46,0.07);
+    const claw = box(0.20,0.05,0.10, bone); claw.position.set(0,-0.49,0.24);
+    knee.add(shin, foot, claw);
+    hip.add(thigh, knee);
+    return { hip, knee };
+  };
+  const legL = mkLeg(-1), legR = mkLeg(1);
+
+  // ---- torso — broad, hunched forward. A spine-vein of sculk runs up the back.
+  const torso = box(0.66,0.64,0.36, armor); torso.position.set(0,1.32,0.02); torso.rotation.x = 0.13;
+  const chestPlate = box(0.52,0.36,0.10, trim); chestPlate.position.set(0,1.42,0.20); chestPlate.rotation.x = 0.13;
+  const ribs = box(0.30,0.22,0.06, veinMat); ribs.position.set(0,1.30,0.22); ribs.rotation.x = 0.13;
+  const spine = box(0.09,0.54,0.09, veinMat); spine.position.set(0,1.34,-0.17); spine.rotation.x = 0.13;
+  const belt  = box(0.62,0.12,0.38, cloth); belt.position.y = 1.00;
+  const beltGem = box(0.12,0.12,0.06, haloMat); beltGem.position.set(0,1.00,0.19);
+
+  // ---- head — torn hood over a horned skull with a glowing eye-slit. Slung low on a hunched neck.
+  const neck = new THREE.Object3D(); neck.position.set(0,1.58,0.03);
+  const hood = box(0.40,0.34,0.38, cloth); hood.position.set(0,0.16,-0.02);
+  const skull = box(0.28,0.26,0.24, bone); skull.position.set(0,0.10,0.10);
+  const jaw = box(0.24,0.08,0.20, dark); jaw.position.set(0,-0.02,0.12);
+  const visor = box(0.24,0.055,0.04, visorMat); visor.position.set(0,0.12,0.21);
+  [-1,1].forEach(s=>{
+    const horn = box(0.06,0.26,0.06, bone); horn.position.set(s*0.16,0.30,-0.02);
+    horn.rotation.z = s*0.5; horn.rotation.x = -0.2; neck.add(horn);
+  });
+  neck.add(hood, skull, jaw, visor);
+
+  // ---- halo — a broken, cracked ring of violet shards, tilted over the head
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.27,0.03,8,20), haloMat);
+  halo.position.y = 2.06; halo.rotation.x = Math.PI/2 - 0.15;
+  for(let i=0;i<5;i++){
+    const a = i/5*Math.PI*2;
+    const shard = box(0.05,0.05,0.17, innerMat);
+    shard.position.set(Math.cos(a)*0.27, 0, Math.sin(a)*0.27); shard.rotation.y = a;
+    halo.add(shard);
+  }
+  halo.add(new THREE.Mesh(new THREE.TorusGeometry(0.16,0.014,6,16), innerMat));
+
+  // ---- arms — hunched, heavy pauldrons with a jutting spike; sculk vein down the forearm
+  const upperArmGeo = new THREE.BoxGeometry(0.15,0.34,0.15); upperArmGeo.translate(0,-0.17,0);
+  const forearmGeo  = new THREE.BoxGeometry(0.14,0.32,0.14); forearmGeo.translate(0,-0.16,0);
+  const mkArm = (side)=>{
+    const shoulder = new THREE.Object3D(); shoulder.position.set(side*0.42,1.56,0.02);
+    const pauldron = box(0.30,0.24,0.32, trim); pauldron.position.set(side*0.03,0.06,0);
+    const spike = box(0.07,0.20,0.07, bone); spike.position.set(side*0.14,0.16,0); spike.rotation.z = side*0.35;
+    const upperArm = new THREE.Mesh(upperArmGeo, cloth);
+    const elbow = new THREE.Object3D(); elbow.position.set(0,-0.34,0);
+    const forearm = new THREE.Mesh(forearmGeo, dark);
+    const gaunt = box(0.18,0.16,0.20, armor); gaunt.position.y = -0.32;
+    const vein  = box(0.05,0.30,0.05, veinMat); vein.position.set(0,-0.16,0.08);
+    elbow.add(forearm, gaunt, vein);
+    shoulder.add(pauldron, spike, upperArm, elbow);
+    return { shoulder, elbow };
+  };
+  const armInfoL = mkArm(-1), armInfoR = mkArm(1);
+  const armL = armInfoL.shoulder, armR = armInfoR.shoulder;
+  const elbowL = armInfoL.elbow, elbowR = armInfoR.elbow;
+
+  // ---- the maul — a heavy two-hand crusher, flanged head, glowing violet core. Hung off the hand.
+  const mace = new THREE.Group();
+  const haft = box(0.08,0.54,0.08, dark); haft.position.y = -0.28;
+  const grip = box(0.10,0.14,0.10, bone); grip.position.y = -0.12;
+  const headCore = box(0.26,0.26,0.26, armor); headCore.position.y = -0.58;
+  const flangeGeo = new THREE.BoxGeometry(0.40,0.18,0.09);
+  [0,Math.PI/2].forEach(r=>{
+    const f = new THREE.Mesh(flangeGeo, trim); f.position.y = -0.58; f.rotation.y = r;
+    mace.add(f);
+  });
+  const spikeTop = box(0.07,0.18,0.07, bone); spikeTop.position.y = -0.78;
+  const core = box(0.13,0.13,0.13, maceGlowMat); core.position.y = -0.58;
+  mace.add(haft, grip, headCore, spikeTop, core);
+  mace.position.set(0,-0.32,0);
+  elbowR.add(mace);
+
+  // ---- wings — not feathered: ragged bat-membrane sails on bone struts, swept back. Still flap on
+  // rotation.z (the state machine drives that), still carry a soft glow sprite.
+  const mkWing = (side)=>{
+    const w = new THREE.Group();
+    const struts = [[1.55,-0.02],[1.30,0.20],[0.98,0.42]];
+    struts.forEach(([len,rise],i)=>{
+      const strut = box(0.055,0.055,len, bone);
+      strut.position.set(0, rise, -len*0.5); strut.rotation.x = -0.10 - i*0.05;
+      w.add(strut);
+      const mem = box(0.02, 0.32+i*0.05, len*0.8, cloth);
+      mem.position.set(0, rise-0.20, -len*0.48); mem.rotation.x = -0.10 - i*0.05;
+      w.add(mem);
+      const claw = box(0.05,0.05,0.14, bone); claw.position.set(0, rise+0.02, -len); claw.rotation.x = -0.10 - i*0.05;
+      w.add(claw);
+    });
+    const root = box(0.12,0.50,0.14, trim); root.position.set(0,0.34,0.04);   // glowing rib at the shoulder
+    w.add(root);
+    const glow = new THREE.Sprite(wingGlowMat);
+    glow.scale.set(0.8, 1.9, 1);
+    glow.position.set(0, 0.30, -0.40);
+    glow.raycast = function(){};   // decorative aura — never eats a shot meant for the body
+    w.add(glow);
+    w.position.set(side*0.34, 1.50, 0.00);
+    w.rotation.y = -side*0.55;
+    return w;
+  };
+  const wingL = mkWing(-1), wingR = mkWing(1);
+
+  g.add(hips, legL.hip, legR.hip, torso, chestPlate, ribs, spine, belt, beltGem, neck, halo, armL, armR, wingL, wingR);
+  return { g, halo, armR, armL, elbowL, elbowR, hipL:legL.hip, hipR:legR.hip,
+    kneeL:legL.knee, kneeR:legR.knee, neck, mace, wingL, wingR, visor, wingGlowMat,
+    accents:[trim, veinMat, innerMat, wingGlowMat] };
+}
+// ------------------------------------------------------------------ MOSS — the second judge
+// player-scale, purple, faster and more relentless than Gabriel: short recoveries, a
+// chase-and-smash mace, a leap slam, and a sweeping laser. Two phases (50% gate), no true form.
+function mossQueueAttacks(){
+  // meteor only recurs in phase 2, and only in the pool (no opener bias) — rare by construction
+  const pool = boss.phase>=2 ? ['smash','leap','scream','mossdash','spin','quake'] : ['smash','leap','scream','mossdash','spin'];
+  const len = boss.phase>=2 ? 3 : 2;   // relentless — he chains, he doesn't idle between hits
+  boss.queue = [];
+  let last = boss.lastAtk;
+  for(let i=0;i<len;i++){
+    let a; do { a = pool[Math.random()*pool.length|0]; } while (a === last);
+    last = a; boss.queue.push(a);
+  }
+  // the opener answers the situation: close the gap when far, punish when already in his face
+  const toP0 = V3(player.pos.x-boss.group.position.x, 0, player.pos.z-boss.group.position.z);
+  const d0 = toP0.length();
+  if (d0 > 10 && boss.lastAtk !== 'mossdash') boss.queue[0] = 'mossdash';
+  else if (d0 < 3 && boss.lastAtk !== 'spin') boss.queue[0] = 'spin';
+}
+function mossNextAttack(){
+  if (!boss.queue.length) mossQueueAttacks();
+  const a = boss.queue.shift();
+  boss.lastAtk = a;
+  boss.state = a; boss.t = 0; boss.dashHit = false; boss.slammed = false; boss._spinN = 0;
+  boss._meteorLocked = false;
+  boss.armR.rotation.z = 0;
+  if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
+  if (beam){ if(beam.mesh) scene.remove(beam.mesh); if(beam.warnMesh) scene.remove(beam.warnMesh); beam = null; }
+  clearChoirBeams();
+}
+function mossEndAttack(){
+  if (boss.queue.length){ mossNextAttack(); return; }
+  boss.state = 'recover'; boss.t = 0;
+  boss.recT = boss.phase>=2 ? 0.18 : 0.38;   // short — he does not give you long to breathe
+  boss.visor.material.color.setHex(0xffffff);
+}
+
+// ---- the sonic scream: the Second Judge rears back and roars a shock-wall down a locked lane.
+// A fast-travelling front, not a sweeping laser — you dodge it by stepping OUT of the lane, not by
+// out-running it. Phase 2 fires it twice. Reuses the `beam` container (mesh + warnMesh) so all the
+// existing cleanup paths (stagger / death / phase-gate / next-attack / spawn) clear it unchanged.
+function mossStartBeam(){
+  const g = boss.group;
+  const toP = V3(player.pos.x-g.position.x, 0, player.pos.z-g.position.z);
+  beam = {
+    angle: Math.atan2(toP.x, toP.z),          // tracks during charge, locks at release
+    halfWidth: boss.phase>=2 ? 2.5 : 2.1,      // lane half-width (world units)
+    range: 34,
+    speed: boss.phase>=2 ? 46 : 40,            // how fast the front races out
+    dmg: boss.phase>=2 ? 40 : 30,              // slight campaign buff (was 34/26)
+    state: 'charge',
+    waveD: -1,                                 // <0 = no live front
+    hit: false,
+    pulses: boss.phase>=2 ? 2 : 1,
+    done: false,
+    mesh: null, warnMesh: null
+  };
+}
+function updateBeam(dt){
+  if (!beam || !boss) return;
+  const origin = boss.group.position.clone().setY(boss.floorY + 1.2);
+  const dir = V3(Math.sin(beam.angle), 0, Math.cos(beam.angle));
+  if (beam.state === 'charge'){
+    if (beam.mesh){ scene.remove(beam.mesh); beam.mesh = null; }
+    if (!beam.warnMesh){
+      const geo = new THREE.PlaneGeometry(beam.halfWidth*2, beam.range);
+      geo.rotateX(-Math.PI/2); geo.translate(0,0,beam.range/2);
+      beam.warnMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color:0xb77bff,
+        transparent:true, opacity:0.16, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false }));
+      scene.add(beam.warnMesh);
+    }
+    beam.warnMesh.position.copy(origin).setY(boss.floorY + 0.05);
+    beam.warnMesh.rotation.y = beam.angle;
+    beam.warnMesh.material.opacity = 0.12 + 0.16*Math.abs(Math.sin(clock.elapsedTime*12));
+    return;
+  }
+  // fire — advance the travelling shock-wall
+  if (beam.warnMesh){ scene.remove(beam.warnMesh); beam.warnMesh = null; }
+  if (beam.waveD < 0) return;
+  beam.waveD += beam.speed*dt;
+  if (!beam.mesh){
+    const geo = new THREE.BoxGeometry(beam.halfWidth*2, 2.6, 0.8);
+    beam.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color:0xc99bff,
+      transparent:true, opacity:0.8, blending:THREE.AdditiveBlending, depthWrite:false }));
+    scene.add(beam.mesh);
+  }
+  const front = origin.clone().addScaledVector(dir, beam.waveD).setY(boss.floorY + 1.2);
+  beam.mesh.position.copy(front);
+  beam.mesh.rotation.y = beam.angle;
+  beam.mesh.material.opacity = 0.6 + Math.random()*0.2;
+  if (Math.random() < dt*44) burst(front.clone().add(V3((Math.random()-0.5)*beam.halfWidth,0,0)), 0xd9b8ff, 2, 8);
+
+  // hit: player inside the lane (small perpendicular offset) AND the front has reached their depth
+  const toP = V3(player.pos.x-origin.x, 0, player.pos.z-origin.z);
+  const along = toP.x*Math.sin(beam.angle) + toP.z*Math.cos(beam.angle);       // depth down the lane
+  const perp  = Math.abs(toP.x*Math.cos(beam.angle) - toP.z*Math.sin(beam.angle)); // offset from centreline
+  if (!beam.hit && along > 0 && along <= beam.range && perp < beam.halfWidth && beam.waveD >= along){
+    beam.hit = true;
+    hurtPlayer(beam.dmg, origin, 12);
+  }
+  if (beam.waveD > beam.range){
+    scene.remove(beam.mesh); beam.mesh = null;
+    beam.pulses--;
+    if (beam.pulses > 0){
+      // re-aim the follow-up at where you are NOW and race it out again
+      beam.angle = Math.atan2(player.pos.x-boss.group.position.x, player.pos.z-boss.group.position.z);
+      beam.waveD = 0; beam.hit = false; sfxUlt(); addShake(0.4);
+    } else {
+      beam.waveD = -1; beam.done = true;
+    }
+  }
+}
 function updateMoss(dt, time){
   if (!boss) return;
   const g = boss.group;
@@ -4193,12 +5107,18 @@ function updateMoss(dt, time){
   }
 
   if (boss.state === 'enter'){
-    g.position.y = Math.max(hover, g.position.y - dt*11);
+    // he tears up out of the grave-floor — rises from below ground, throwing debris, then erupts
     faceBoss(toP, dt, 3);
-    if (g.position.y <= hover + 0.1){
+    g.position.y = Math.min(hover, g.position.y + dt*7);
+    if (Math.random() < dt*34) burst(g.position.clone().setY(boss.floorY+0.1)
+      .add(V3((Math.random()-0.5)*1.8, 0, (Math.random()-0.5)*1.8)), 0x6b2fb0, 3, 7);
+    boss.halo.rotation.z += dt*3;
+    if (g.position.y >= hover - 0.08){
+      g.position.y = hover;
       boss.state = 'idle'; boss.atkT = 0.6;
-      burst(g.position.clone().setY(0.5), 0x9a5cff, 24, 9);
-      shake = Math.max(shake, 0.3);
+      burst(g.position.clone().setY(boss.floorY+0.3), 0x9a5cff, 32, 12);
+      spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max: 13, dmg: 0, color:0x9a5cff });
+      sfxUlt(); shake = Math.max(shake, 0.5); addHitstop(0.05);
     }
     break;
   }
@@ -4264,7 +5184,10 @@ function updateMoss(dt, time){
       const sp = (boss.t - chaseDur - windDur)/strikeDur;
       boss.armR.rotation.x = THREE.MathUtils.lerp(-2.5, 0.9, sp);
       if (boss._smashDir) g.position.addScaledVector(boss._smashDir, 7*dt);
-      g.position.y -= Math.sin(sp*Math.PI) * 0.35 * dt * 60;
+      // a bounded, framerate-independent dip — the body drops into the blow then returns to hover
+      // as the arc completes (sp->1). The old `-= …*dt*60` accumulated ~2-3u and sank him through
+      // the floor, which also inflated the melee distance check below and made hits whiff.
+      g.position.y = hover - Math.sin(sp*Math.PI) * 0.5;
       clampBossPos();
       if (!boss.slammed && sp > 0.55){
         boss.slammed = true;
@@ -4275,7 +5198,9 @@ function updateMoss(dt, time){
         // layered domain — a wide outer wave and a punishing inner one
         spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max: boss.phase>=2?20:16, dmg: boss.phase>=2?34:26, color:0xc99bff });
         spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max: 6, dmg: boss.phase>=2?18:14, color:0xe8c9ff });
-        if (g.position.distanceTo(player.pos) < (boss.phase>=2 ? 5.5 : 4.5)) hurtPlayer(boss.phase>=2?34:24, g.position);
+        // horizontal reach only — the vertical dip must not decide whether the mace connects
+        const smashHD = Math.hypot(g.position.x-player.pos.x, g.position.z-player.pos.z);
+        if (smashHD < (boss.phase>=2 ? 5.5 : 4.5)) hurtPlayer(boss.phase>=2?34:24, g.position);
       }
     } else if (boss.t > chaseDur + windDur + strikeDur + 0.25){
       boss.armR.rotation.x = 0;
@@ -4321,52 +5246,52 @@ function updateMoss(dt, time){
     break;
   }
 
-  // ---- meteor: his phase-2 signature — launches out of the arena, hangs over a huge tracking
-  // decal, then crashes down as a falling star with a domain that dwarfs every other attack.
-  // Fires automatically on the 50% gate (damageBoss) and can recur afterward from the pool.
-  if (boss.state === 'meteor'){
-    const ascendDur = 0.55, hangDur = 0.7, lockAt = ascendDur + hangDur - 0.2;
-    if (boss.t < ascendDur){
-      const p = Math.min(1, boss.t/ascendDur);
-      g.position.y = hover + p*p*35;
+  // ---- quake: his phase-2 signature (was the flying "meteor"). No flight — he hoists the maul
+  // overhead while a huge decal tracks you and LOCKS, then lunges across the floor to it and drives
+  // the maul down with a domain that dwarfs everything else. Fires on the 50% gate + recurs from pool.
+  if (boss.state === 'quake'){
+    const windDur = 0.65, lockAt = 0.5, lungeDur = 0.45;
+    if (boss.t < windDur){
+      // hoist overhead; the target decal tracks you live until the lock, then commits
+      faceBoss(toP, dt, 5);
+      const p = Math.min(1, boss.t/windDur);
       boss.armR.rotation.x = -2.6*p; boss.armL.rotation.x = -2.6*p;
-      boss.wingL.rotation.z = 0.9; boss.wingR.rotation.z = -0.9;
-      if (Math.random() < dt*30) burst(g.position.clone(), 0x9a5cff, 3, 6);
-      if (boss.t < 0.05) addShake(0.3);
-    } else if (boss.t < ascendDur + hangDur){
+      g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+      boss.wingL.rotation.z = 0.5 + p*0.4; boss.wingR.rotation.z = -0.5 - p*0.4;
       if (!boss._leapRing){
-        const ring = new THREE.Mesh(new THREE.RingGeometry(4.6,5.6,40),
+        const ring = new THREE.Mesh(new THREE.RingGeometry(4.4,5.6,40),
           new THREE.MeshBasicMaterial({ color:0xc99bff, transparent:true, opacity:0.55, side:THREE.DoubleSide }));
-        ring.rotation.x = -Math.PI/2;
-        scene.add(ring);
-        boss._leapRing = ring;
-        boss._leapTarget = player.pos.clone();
+        ring.rotation.x = -Math.PI/2; scene.add(ring);
+        boss._leapRing = ring; boss._leapTarget = player.pos.clone();
       }
-      if (boss.t < lockAt) boss._leapTarget.copy(player.pos);   // tracks live, then locks — outrun the edge
+      if (boss.t < lockAt) boss._leapTarget.copy(player.pos);   // tracks live, then locks — leave the ring
       else if (!boss._meteorLocked){ boss._meteorLocked = true; whisperNow('RUN'); }
       boss._leapRing.position.copy(boss._leapTarget).setY(boss.floorY+0.06);
       boss._leapRing.material.opacity = 0.35 + 0.35*Math.abs(Math.sin(clock.elapsedTime*12));
-      g.position.x += (boss._leapTarget.x - g.position.x) * Math.min(1, 2*dt);
-      g.position.z += (boss._leapTarget.z - g.position.z) * Math.min(1, 2*dt);
+      if (Math.random() < dt*24) burst(g.position.clone().setY(boss.floorY+1.6), 0x9a5cff, 2, 6);
+    } else if (!boss.slammed && boss.t < windDur + lungeDur){
+      // lunge across the ground to the locked spot — feet on the floor, just a low driving hop
+      g.position.x += (boss._leapTarget.x - g.position.x) * Math.min(1, 10*dt);
+      g.position.z += (boss._leapTarget.z - g.position.z) * Math.min(1, 10*dt);
+      g.position.y = hover + Math.sin(Math.min(1,(boss.t-windDur)/lungeDur)*Math.PI)*0.6;
+      clampBossPos();
+      if (Math.random() < dt*40) burst(g.position.clone().setY(boss.floorY+0.5), 0x9a5cff, 3, 6);
     } else if (!boss.slammed){
-      g.position.x += (boss._leapTarget.x - g.position.x) * Math.min(1, 8*dt);
-      g.position.z += (boss._leapTarget.z - g.position.z) * Math.min(1, 8*dt);
-      g.position.y -= 120*dt;
-      const land = boss.floorY + 1.0;
-      if (g.position.y <= land){
-        g.position.y = land; boss.slammed = true;
-        boss.armR.rotation.x = 0; boss.armL.rotation.x = 0;
-        if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
-        sfxUlt(); addShake(0.9); addHitstop(0.08);
-        burst(g.position.clone().setY(boss.floorY+0.4), 0xd9b8ff, 60, 16);
-        burst(g.position.clone().setY(boss.floorY+0.1), 0x6b2fb0, 30, 7);
-        // a domain that dwarfs everything else he does — three concentric waves
-        spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max:28, dmg:48, color:0xc99bff });
-        spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max:16, dmg:34, color:0xd9b8ff });
-        spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max:8,  dmg:24, color:0xffffff });
-        if (g.position.distanceTo(player.pos) < 6.5) hurtPlayer(46, g.position);
-      }
-    } else if (boss.t > ascendDur + hangDur + 0.9){
+      // plant and DRIVE the maul down — the room-owning domain
+      boss.slammed = true;
+      g.position.y = hover;
+      boss.armR.rotation.x = 0.9; boss.armL.rotation.x = 0.9;
+      if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
+      sfxUlt(); addShake(0.95); addHitstop(0.09);
+      burst(g.position.clone().setY(boss.floorY+0.4), 0xd9b8ff, 60, 16);
+      burst(g.position.clone().setY(boss.floorY+0.1), 0x6b2fb0, 30, 7);
+      spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max:28, dmg:54, color:0xc99bff });
+      spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max:16, dmg:38, color:0xd9b8ff });
+      spawnShockwave(g.position.clone().setY(boss.floorY+0.15), { max:8,  dmg:26, color:0xffffff });
+      const qHD = Math.hypot(g.position.x-player.pos.x, g.position.z-player.pos.z);
+      if (qHD < 6.5) hurtPlayer(50, g.position);
+    } else if (boss.t > windDur + lungeDur + 0.7){
+      boss.armR.rotation.x = 0; boss.armL.rotation.x = 0;
       mossEndAttack();
     }
     break;
@@ -4424,27 +5349,34 @@ function updateMoss(dt, time){
     break;
   }
 
-  // ---- sweeping laser: charge telegraph, then a beam sweeps across a fixed arc
-  if (boss.state === 'beam'){
+  // ---- sonic scream: a rear-back roar telegraph, then a locked shock-wall races down the lane.
+  // Timing/pose lives here; the travelling front + damage lives in updateBeam (main-loop driven).
+  if (boss.state === 'scream'){
     if (!beam) mossStartBeam();
-    const chargeDur = 0.6;
-    if (boss.t < chargeDur){
-      faceBoss(toP, dt, 5);
-      boss.armR.rotation.x = -1.3*(boss.t/chargeDur);
-      beam.state = 'charge';
-    } else {
-      beam.state = 'fire';
-      const fireDur = boss.phase>=2 ? 2.2 : 1.6;
-      const speed = boss.phase>=2 ? 2.6 : 1.9;
-      const ft = boss.t - chargeDur;
-      beam.angle += beam.sweepDir * speed * dt;
-      if (ft >= fireDur){
-        if (beam.mesh) scene.remove(beam.mesh);
-        if (beam.warnMesh) scene.remove(beam.warnMesh);
-        beam = null;
-        boss.armR.rotation.x = 0;
-        mossEndAttack();
-      }
+    const chargeDur = 0.55;
+    boss.halo.rotation.z += dt*4;
+    if (beam.state === 'charge' && boss.t < chargeDur){
+      // the intake — track you, rear the head/arms back
+      faceBoss(toP, dt, 6);
+      beam.angle = Math.atan2(toP.x, toP.z);
+      const cp = boss.t/chargeDur;
+      boss.armR.rotation.x = -1.5*cp; boss.armL.rotation.x = -1.5*cp;
+      g.position.y += (hover - g.position.y) * Math.min(1, 5*dt);
+      if (Math.random() < dt*20) burst(g.position.clone().setY(boss.floorY+1.6), 0xb77bff, 2, 5);
+    } else if (beam.state === 'charge'){
+      // the roar — lock the lane, launch the first wave
+      beam.state = 'fire'; beam.waveD = 0; beam.hit = false;
+      sfxUlt(); addShake(0.7); addHitstop(0.05);
+      whisperNow('IT SCREAMS');
+      burst(g.position.clone().setY(boss.floorY+1.5), 0xd9b8ff, 34, 13);
+      boss.armR.rotation.x = 0.4; boss.armL.rotation.x = 0.4;
+    }
+    if (beam.done){
+      if (beam.mesh) scene.remove(beam.mesh);
+      if (beam.warnMesh) scene.remove(beam.warnMesh);
+      beam = null;
+      boss.armR.rotation.x = 0; boss.armL.rotation.x = 0;
+      mossEndAttack();
     }
     break;
   }
@@ -4476,10 +5408,10 @@ function mossPose(dt, time){
   let hipT = 0.05, kneeT = 0.15, legRate = 6;
   if (s === 'smash' || s === 'leap' || s === 'mossdash'){ hipT = -0.3; kneeT = 0.6; legRate = 9; }
   else if (s === 'spin'){ hipT = -0.15; kneeT = 0.4; legRate = 8; }
-  else if (s === 'meteor'){
-    // tucked tight on the ascend, driving straight down through the fall
-    const falling = !boss._leapRing || boss.slammed;
-    hipT = falling ? -0.55 : -0.2; kneeT = falling ? 1.3 : 0.9; legRate = 11;
+  else if (s === 'quake'){
+    // braced wide through the wind and lunge, then dropped into a deep planted crouch on the slam
+    const planted = boss.slammed;
+    hipT = planted ? -0.55 : -0.28; kneeT = planted ? 1.15 : 0.7; legRate = 11;
   }
   const sway = Math.sin(time*2.0)*0.06;
   boss.hipL.rotation.x = THREE.MathUtils.lerp(boss.hipL.rotation.x, hipT+sway, Math.min(1, legRate*dt));
@@ -4508,7 +5440,7 @@ function mossPose(dt, time){
   else if (s === 'leap') phiTargetR = 1.6;
   else if (s === 'mossdash') phiTargetR = 0.6;
   else if (s === 'spin') phiTargetR = 1.7;
-  else if (s === 'meteor') phiTargetR = 1.8;
+  else if (s === 'quake') phiTargetR = 1.9;
   boss._phiR = THREE.MathUtils.lerp(boss._phiR, phiTargetR, Math.min(1, 9*dt));
   boss.elbowR.rotation.x = boss._phiR - boss.armR.rotation.x;
   boss.elbowL.rotation.x = THREE.MathUtils.lerp(boss.elbowL.rotation.x, 0.3, Math.min(1,6*dt));
@@ -4526,13 +5458,13 @@ function mossPose(dt, time){
    ========================================================================= */
 function choirQueueAttacks(){
   const pool = boss.phase>=2
-    ? ['volley','nova','blades','beam','lance','blast','volley','nova','lance']
-    : ['volley','nova','blades','beam','lance','blast'];
+    ? ['slashH','slashD','glaive','slashH','slashD','slashD','slashH']
+    : ['slashH','slashD','glaive'];
   const len = boss.phase>=2 ? 4 : 3;
   boss.queue = [];
   let last = boss.lastAtk;
   for(let i=0;i<len;i++){
-    let a; do { a = pool[Math.random()*pool.length|0]; } while (a === last);
+    let a; do { a = pool[Math.random()*pool.length|0]; } while (a === last && Math.random()<0.7);
     last = a; boss.queue.push(a);
   }
 }
@@ -4540,10 +5472,7 @@ function choirNextAttack(){
   if (!boss.queue.length) choirQueueAttacks();
   const a = boss.queue.shift();
   boss.lastAtk = a;
-  boss.state = a; boss.t = 0; boss.slammed = false; boss.volleyN = 0; boss.ringN = 0;
-  boss._spiralT = 0; boss._blastBlinked = false;
-  if (a === 'beam') spawnChoirBeams(boss.phase>=2 ? 3 : 1);
-  if (a === 'lance') spawnChoirBeams(1, 'lance');
+  boss.state = a; boss.t = 0; boss.slammed = false;
 }
 function choirEndAttack(){
   if (boss.queue.length){ choirNextAttack(); return; }   // chain straight into the next
@@ -4636,116 +5565,41 @@ function updateChoir(dt, time){
     break;
   }
 
-  // ---- volley — well-led fan-spreads of fast orbs; phase 2 orbs curve toward you
-  if (boss.state === 'volley'){
+  // ---- slashH / slashD — blink to melee range, wind up, then a swept horizontal or diagonal
+  // energy crescent (see spawnChoirSlash/updateChoirSlash). Phase 2 chains these into combos.
+  if (boss.state === 'slashH' || boss.state === 'slashD'){
     g.position.y = hover;
-    faceBoss(toP, dt, 4);
-    const shots = boss.phase>=2 ? 4 : 3;
-    const interval = 0.18;
-    if (boss.volleyN < shots && boss.t > boss.volleyN*interval){
-      boss.volleyN++;
-      sfxUlt();
-      const spd = boss.phase>=2 ? 24 : 20;
-      const dir = interceptDir(g.position, spd, 0.9);   // leads hard now
-      const spread = boss.phase>=2 ? 5 : 4;
-      const homeOpt = boss.phase>=2 ? { home: 1.4, homeFor: 0.8 } : { home: 0.7, homeFor: 0.6 };
-      for(let i=0;i<spread;i++){
-        const off = (i - (spread-1)/2) * 0.11;
-        const d = dir.clone().applyAxisAngle(V3(0,1,0), off).normalize();
-        spawnEnemyOrb(g.position.clone(), d.multiplyScalar(spd), boss.phase>=2?30:22, 0x9fe0ff, 0.34, homeOpt);
-      }
-      burst(g.position.clone(), 0x9fe0ff, 6, 6);
+    faceBoss(toP, dt, 9);
+    const windup = boss.phase>=2 ? 0.16 : 0.26;
+    if (!boss.slammed && boss.t < 0.03 && dist > 5.5) choirBlink(toP, 3.5 + Math.random()*1.5);
+    if (!boss.slammed && boss.t > windup){
+      boss.slammed = true;
+      spawnChoirSlash(boss.state === 'slashD' ? 'd' : 'h');
     }
-    if (boss.t > shots*interval + 0.4) choirEndAttack();
+    if (boss._slash) updateChoirSlash(dt);
+    else if (boss.slammed) choirEndAttack();
     break;
   }
 
-  // ---- nova — a dense rotating SPIRAL that fills the arena (no free lane to walk through)
-  if (boss.state === 'nova'){
+  // ---- glaive — throws spinning glaive(s) that detonate in a shockwave + shrapnel on impact
+  if (boss.state === 'glaive'){
     g.position.y = hover;
-    faceBoss(toP, dt, 2);
-    if (boss._spiralT === undefined) boss._spiralT = 0;
-    const dur = boss.phase>=2 ? 1.9 : 1.5;
-    const emitEvery = 0.06;
-    boss._spiralT += dt;
-    if (boss.t > 0.3 && boss.t < dur && boss._spiralT >= emitEvery){
-      boss._spiralT -= emitEvery;
-      const arms = boss.phase>=2 ? 3 : 2;      // 2–3 spiral arms
-      const base = boss.t * (boss.phase>=2 ? 5.0 : 4.0);
+    faceBoss(toP, dt, 4);
+    if (!boss.slammed && boss.t > (boss.phase>=2 ? 0.16 : 0.24)){
+      boss.slammed = true;
+      sfxUlt(); burst(g.position.clone(), 0x9fe0ff, 10, 7);
+      const n = boss.phase>=2 ? 3 : 1;
       const spd = boss.phase>=2 ? 16 : 13;
-      for(let k=0;k<arms;k++){
-        const a = base + k*(Math.PI*2/arms);
-        const d = V3(Math.sin(a),0,Math.cos(a));
-        spawnEnemyOrb(g.position.clone().setY(hover), d.multiplyScalar(spd), boss.phase>=2?30:20, 0xc99bff, 0.30);
-      }
-      if (Math.random()<0.4) burst(g.position.clone(), 0xc99bff, 3, 6);
-    }
-    if (boss.t > dur + 0.5) choirEndAttack();
-    break;
-  }
-
-  // ---- blades — faster homing thrown blades that return through you (reuses spawnBossSword)
-  if (boss.state === 'blades'){
-    g.position.y = hover;
-    faceBoss(toP, dt, 4);
-    const n = boss.phase>=2 ? 5 : 4;
-    if (!boss.slammed && boss.t > 0.2){
-      boss.slammed = true;
-      sfxHorn(); burst(g.position.clone(), 0xcfe8ff, 10, 7);
       for(let i=0;i<n;i++){
-        const spawnOff = V3((Math.random()-0.5)*1.4, (Math.random()-0.5)*0.8, (Math.random()-0.5)*1.4);
-        const dir = interceptDir(g.position.clone().add(spawnOff), 17, 0.9);
-        spawnBossSword(g.position.clone().add(spawnOff), dir.multiplyScalar(17),
-          boss.phase>=2?30:22, { returnAt: 0.9 + i*0.07 });
+        const spread = n>1 ? (i-(n-1)/2)*0.3 : 0;
+        const dir = interceptDir(g.position, spd, 0.85).applyAxisAngle(V3(0,1,0), spread).normalize();
+        spawnBossSword(g.position.clone(), dir.multiplyScalar(spd), boss.phase>=2?26:20, {
+          life: 2.3,
+          detonate: { dmg: boss.phase>=2?26:20, max: boss.phase>=2?10:7, shrapnel: boss.phase>=2?7:5 }
+        });
       }
     }
-    if (boss.t > 0.9) choirEndAttack();
-    break;
-  }
-
-  // ---- beam — one or three sweeping laser(s), via choirBeams[] (see updateChoirBeams)
-  if (boss.state === 'beam'){
-    g.position.y = hover;
-    if (boss.t > 2.0 && choirBeams.length === 0){ choirEndAttack(); }
-    else if (boss.t > 2.6){ clearChoirBeams(); choirEndAttack(); }
-    break;
-  }
-
-  // ---- lance — a single fat aimed laser that locks your bearing then burns (see 'lance' beam)
-  if (boss.state === 'lance'){
-    g.position.y = hover;
-    if (choirBeams.length === 0 && boss.t > 0.5){ choirEndAttack(); }
-    else if (boss.t > 1.6){ clearChoirBeams(); choirEndAttack(); }
-    break;
-  }
-
-  // ---- blast — blink to point-blank, then a shockwave nova you have to jump
-  if (boss.state === 'blast'){
-    faceBoss(toP, dt, 5);
-    if (boss.t < 0.05 && !boss.slammed){ /* blink happens once, guarded below */ }
-    if (!boss._blastBlinked){
-      boss._blastBlinked = true;
-      choirBlink(V3(-toP.x,0,-toP.z), 5 + Math.random()*2);
-    }
-    g.position.y = hover;
-    if (boss.t > 0.5 && !boss.slammed){
-      boss.slammed = true;
-      sfxUlt(); addShake(0.8); addHitstop(0.1);
-      burst(g.position.clone(), 0x9fe0ff, 40, 14);
-      spawnShockwave(g.position.clone().setY(boss.floorY+0.1),
-        { max: boss.phase>=2?26:20, dmg: boss.phase>=2?58:40, color:0x9fe0ff });
-      // detonation scatters a ring of homing orbs — jumping the wave isn't enough
-      const ringN = boss.phase>=2 ? 12 : 8;
-      for(let i=0;i<ringN;i++){
-        const a = (i/ringN)*Math.PI*2;
-        const d = V3(Math.sin(a),0,Math.cos(a));
-        spawnEnemyOrb(g.position.clone().setY(hover), d.multiplyScalar(12), boss.phase>=2?24:18, 0x9fe0ff, 0.30,
-          { home: boss.phase>=2?1.1:0.6, homeFor: 0.9 });
-      }
-    } else if (boss.t > 0.95){
-      boss._blastBlinked = false;
-      choirEndAttack();
-    }
+    if (boss.t > 0.7) choirEndAttack();
     break;
   }
 
@@ -4766,29 +5620,54 @@ function updateChoir(dt, time){
 function choirPose(dt, time){
   if (!boss || !boss.robeSegs || boss.state === 'dead') return;
   const g = boss.group, s = boss.state;
-  const casting = (s==='volley'||s==='nova'||s==='blades'||s==='beam'||s==='lance'||s==='blast');
+  const isSlash = (s==='slashH' || s==='slashD');
+  const windingUp = isSlash && !boss.slammed;          // rewinding the staff arm before the cut
+  const swinging  = isSlash && boss.slammed;           // whipping through the sweep (spawnChoirSlash fired)
+  const throwing  = (s==='glaive');
+  const active = windingUp || swinging || throwing;
 
-  // arms: raise/extend toward the player while casting, relax otherwise. She casts with the
-  // staff arm (R) higher; the free hand (L) rises to meet it.
-  const armT = casting ? -1.3 : -0.15;
-  const rate = Math.min(1, 7*dt);
-  boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x, armT + (casting?Math.sin(time*9)*0.08:0), rate);
-  boss.armL.rotation.x = THREE.MathUtils.lerp(boss.armL.rotation.x, casting ? -1.0 : -0.15, rate);
-  boss.elbowR.rotation.x = THREE.MathUtils.lerp(boss.elbowR.rotation.x, casting ? -0.5 : -0.2, rate);
-  boss.elbowL.rotation.x = THREE.MathUtils.lerp(boss.elbowL.rotation.x, casting ? -0.6 : -0.2, rate);
+  // arms: wind back then whip across for a slash, a short throw punch for a glaive, relax
+  // otherwise. The staff arm (R) carries the motion; the free hand (L) rises to meet it.
+  let armTx = -0.15, armTz = 0, elbowTx = -0.2;
+  if (windingUp){
+    armTx = -2.2; elbowTx = -0.9;
+  } else if (swinging){
+    const sp = boss._slash ? THREE.MathUtils.clamp(boss._slash.t/boss._slash.dur, 0, 1) : 1;
+    const dir = boss._slash ? boss._slash.dir : 1;
+    armTx = THREE.MathUtils.lerp(-2.2, -0.5, sp);
+    armTz = dir * THREE.MathUtils.lerp(-1.15, 1.15, sp);
+    elbowTx = THREE.MathUtils.lerp(-0.9, -0.15, sp);
+  } else if (throwing){
+    armTx = boss.slammed ? -0.4 : -1.5;
+    elbowTx = -0.3;
+  }
+  const rate = Math.min(1, (swinging ? 14 : 8)*dt);
+  boss.armR.rotation.x = THREE.MathUtils.lerp(boss.armR.rotation.x, armTx, rate);
+  boss.armR.rotation.z = THREE.MathUtils.lerp(boss.armR.rotation.z, armTz, rate);
+  boss.armL.rotation.x = THREE.MathUtils.lerp(boss.armL.rotation.x, active ? -1.0 : -0.15, rate);
+  boss.elbowR.rotation.x = THREE.MathUtils.lerp(boss.elbowR.rotation.x, elbowTx, rate);
+  boss.elbowL.rotation.x = THREE.MathUtils.lerp(boss.elbowL.rotation.x, active ? -0.6 : -0.2, rate);
 
-  // staff focus orb pulses brighter mid-cast
-  if (boss.orb) boss.orb.scale.setScalar(1 + (casting ? 0.3 + Math.abs(Math.sin(time*10))*0.4 : Math.sin(time*2)*0.08));
+  // staff focus orb pulses brighter mid-attack
+  if (boss.orb) boss.orb.scale.setScalar(1 + (active ? 0.3 + Math.abs(Math.sin(time*10))*0.4 : Math.sin(time*2)*0.08));
 
-  // gown + hair stream out with movement speed
+  // gown streams out with movement speed
   if (!boss._prevPos) boss._prevPos = g.position.clone();
   const speed = boss._prevPos.distanceTo(g.position) / Math.max(dt, 1e-4);
   boss._prevPos.copy(g.position);
   const amp = THREE.MathUtils.clamp(speed/10, 0, 1);
   for(let i=0;i<boss.robeSegs.length;i++)
     boss.robeSegs[i].rotation.x = -0.05 - amp*0.3 + Math.sin(time*2.6 - i*0.6)*(0.06+amp*0.14);
-  for(let i=0;i<boss.hairSegs.length;i++)
-    boss.hairSegs[i].rotation.x = 0.12 + amp*0.4 + Math.sin(time*3.2 - i*0.7)*(0.10+amp*0.18);
+
+  // hair: three strand columns weave as a travelling S-curve (offset by column, then by
+  // index down the strand) rather than swinging as one stiff chain, amplified by movement.
+  for(let k=0;k<boss.hairSegs.length;k++){
+    const seg = boss.hairSegs[k];
+    const col = seg.userData.col, idx = seg.userData.i;
+    const colPhase = (col-1)*1.1;   // -1.1 / 0 / 1.1 across left, centre, right strands
+    seg.rotation.x = 0.14 + amp*0.4 + Math.sin(time*3.0 - idx*0.55 + colPhase)*(0.12+amp*0.20);
+    seg.rotation.z = Math.sin(time*2.2 - idx*0.5 + colPhase*1.3)*(0.08+amp*0.16);
+  }
 
   const toP = V3(player.pos.x-g.position.x, 0, player.pos.z-g.position.z);
   let dYaw = Math.atan2(toP.x, toP.z) - g.rotation.y;
@@ -4903,6 +5782,12 @@ function shoot(){
   if (shotFedSkills && boons.overcharge){
     skills.eCd = Math.max(0, skills.eCd - 0.2);
     skills.rCd = Math.max(0, skills.rCd - 0.2);
+  }
+  // CROWN OF THE CHORUS (Choir): every third shot looses a sonic wave that bursts out ahead of you
+  if (boons.chorus){
+    gun._chorusN = (gun._chorusN || 0) + 1;
+    if (gun._chorusN % 3 === 0)
+      crownBlast(player.pos.clone().addScaledVector(fwd, 5).setY(player.pos.y - player.eye + 1.0), 4.2, 40, 0x9fe0ff);
   }
   // scattergun kick: shove yourself — aim at the floor mid-air for a boost
   if (gun.cur==='shotgun'){
@@ -5091,6 +5976,14 @@ function bladeStrike(){
     // CROWN OF EMBERS: the sweep leaves the ground burning
     if (boons.emberBlade)
       spawnEmberRing(player.pos.x, player.pos.z, player.pos.y - player.eye);
+    // TREMOR CROWN (Moss): the sweep splits the ground — two concentric quake waves + a shock ring
+    if (boons.tremorBlade){
+      const c = player.pos.clone().setY(player.pos.y - player.eye + 0.8);
+      crownBlast(c, 4.5, 46, 0xc99bff);
+      crownBlast(c, 8.0, 26, 0xc99bff);
+      addShake(0.4);
+      spawnShockwave(player.pos.clone().setY(player.pos.y - player.eye + 0.15), { max: 12, dmg: 0, color: 0xc99bff });
+    }
   }
   if (boss && boss.state!=='dead'){
     const to = V3().subVectors(boss.group.position, player.pos); to.y = 0;
@@ -5228,7 +6121,11 @@ function updatePlayerProjectiles(dt){
       const to = V3().subVectors(boss.group.position.clone().setY(p.mesh.position.y), p.mesh.position);
       if (to.length() < 3){
         p.hitBoss = true;
-        damageBoss(p.bossDmg !== undefined ? p.bossDmg : 55, p.mesh.position.clone());
+        // the Warden shrugs off his own reflected steel — parried shots deal him only half, so
+        // parry-countering no longer melts him (regular shots & other bosses are unaffected)
+        let bd = p.bossDmg !== undefined ? p.bossDmg : 55;
+        if (p.parry && boss.kind === 'warden') bd *= 0.5;
+        damageBoss(bd, p.mesh.position.clone());
         if (p.parry){ scene.remove(p.mesh); pprojs.splice(i,1); continue; }  // his steel, spent
       }
     }
@@ -5345,6 +6242,7 @@ function updateSkillsUI(dt){
 
 function hurtPlayer(dmg, from, knock){
   if (dead) return;
+  if (player.portalInvuln) return;      // a felled judge grants safe passage — no death to stray shots on the way out
   if (player.invulnT > 0) return;       // GHOSTSTEP / SECOND WIND i-frames: no damage this window
   if (boss && boss.true) dmg *= 1.5;    // the real one does not pull his strikes
   dmg *= boons.dmgTakenMul;             // AEGIS shrine stack: soak a share of every blow
@@ -5563,31 +6461,78 @@ const BOON_POOL = [
 // of your systems behaves. They never appear in the nightly pool, they never repeat, and they
 // are the only reward for felling a judge — which was previously paying out exactly the same as
 // clearing twelve hollows on night two.
+// Four signature crowns per judge — a boss offers three drawn from its OWN four. Each carries a
+// slice of that judge's kit (Gabriel's halo/judgement, the Warden's rot, Moss's quakes, the Choir's
+// echoes), and each is strong on its own so any pick advances your build.
 const CROWN_POOL = [
-  { id:'crownExecute', name:"EXECUTIONER'S CROWN", tag:'crown', icon:'sword', crown:true,
-    stat:'CULL UNDER 25%',
-    desc:'Any hit that drops a foe below a quarter of its health kills it outright. Judges are immune.',
-    apply: ()=>{ boons.execute = 0.25; } },
-  { id:'crownHollow', name:'THE HOLLOW CROWN', tag:'crown', icon:'ult', crown:true,
+  // ---------------- GABRIEL — the holy judge: judgement, blade, halo, wings ----------------
+  { id:'crownHollow', name:'THE HOLLOW CROWN', boss:'gabriel', tag:'crown', icon:'ult', crown:true,
     stat:'JUDGEMENT x2',
     desc:'You hold two charges of JUDGEMENT, and they recharge one after the other.',
     apply: ()=>{ boons.ultCharges = 2; skills.rStock = 2; } },
-  { id:'crownEmbers', name:'CROWN OF EMBERS', tag:'crown', icon:'flame', crown:true,
+  { id:'crownEmbers', name:'CROWN OF EMBERS', boss:'gabriel', tag:'crown', icon:'flame', crown:true,
     stat:'FINISHER BURNS GROUND',
     desc:'Your blade finisher leaves a ring of fire that burns everything standing in it.',
     apply: ()=>{ boons.emberBlade = true; } },
-  { id:'crownThorns', name:'CROWN OF THORNS', tag:'crown', icon:'shield', crown:true,
+  { id:'crownHalo', name:'THE HALO CROWN', boss:'gabriel', tag:'crown', icon:'crown', crown:true,
+    stat:'HOLY RING CUTS FOES',
+    desc:'A halo of light rings you, striking every enemy that strays too close.',
+    apply: ()=>{ boons.haloPulse = true; } },
+  { id:'crownWinged', name:'THE WINGED CROWN', boss:'gabriel', tag:'crown', icon:'wing', crown:true,
+    stat:'+1 JUMP, DASH BITES',
+    desc:'One more air jump, far longer dash i-frames, and your dash carves through anything it crosses.',
+    apply: ()=>{ boons.maxJumps = Math.min(5, boons.maxJumps + 1); boons.dashIframes = true; boons.dashDmg += 50; } },
+  // ---------------- THE WARDEN — rot, spores, miasma, feeding on the dead ----------------
+  { id:'crownThorns', name:'CROWN OF THORNS', boss:'warden', tag:'crown', icon:'shield', crown:true,
     stat:'-25% TAKEN, 60% BACK',
     desc:'You take a quarter less damage, and whatever struck you takes most of it back.',
     apply: ()=>{ boons.thorns = 0.6; boons.dmgTakenMul *= 0.75; } },
-  { id:'crownTurning', name:'THE TURNING CROWN', tag:'crown', icon:'vortex', crown:true,
+  { id:'crownRot', name:'CROWN OF ROT', boss:'warden', tag:'crown', icon:'drop', crown:true,
+    stat:'KILLS BURST WITH SPORES',
+    desc:'Every foe you fell erupts in a cloud of rot that eats everything around it.',
+    apply: ()=>{ boons.rotKill = true; } },
+  { id:'crownMiasma', name:'CROWN OF MIASMA', boss:'warden', tag:'crown', icon:'soul', crown:true,
+    stat:'ROT HAZE GNAWS NEARBY',
+    desc:'A haze of spores clings to you, steadily gnawing at every enemy that comes near.',
+    apply: ()=>{ boons.miasma = true; } },
+  { id:'crownGlutton', name:'CROWN OF THE GLUTTON', boss:'warden', tag:'crown', icon:'heart', crown:true,
+    stat:'LIFESTEAL + HEAL ON KILL',
+    desc:'Every hit feeds you a little vitality; every kill feeds you more.',
+    apply: ()=>{ boons.lifesteal += 4; boons.healOnKill += 6; } },
+  // ---------------- MOSS, THE SECOND JUDGE — quakes, slams, immovable weight ----------------
+  { id:'crownStarved', name:'CROWN OF THE STARVED', boss:'moss', tag:'crown', icon:'skull', crown:true,
+    stat:'KILLS CUT COOLDOWNS',
+    desc:'Every kill takes 0.6s off every cooldown you are holding.',
+    apply: ()=>{ boons.killHaste = 0.6; } },
+  { id:'crownSeismic', name:'SEISMIC CROWN', boss:'moss', tag:'crown', icon:'burst', crown:true,
+    stat:'DASH SLAMS A SHOCKWAVE',
+    desc:'Every dash drives a shockwave out from where you launch, flattening nearby foes.',
+    apply: ()=>{ boons.seismicDash = true; } },
+  { id:'crownTremor', name:'TREMOR CROWN', boss:'moss', tag:'crown', icon:'round', crown:true,
+    stat:'FINISHER SPLITS GROUND',
+    desc:'Your blade finisher cracks the floor open in two rolling quake waves.',
+    apply: ()=>{ boons.tremorBlade = true; } },
+  { id:'crownMountain', name:'CROWN OF THE MOUNTAIN', boss:'moss', tag:'crown', icon:'shield', crown:true,
+    stat:'-30% TAKEN, HURT = HARDER',
+    desc:'You take 30% less damage, and the lower your vitality the harder you hit.',
+    apply: ()=>{ boons.dmgTakenMul *= 0.7; boons.berserk = true; } },
+  // ---------------- CHOIR, THE HOLLOW VERDICT — echoes, detonations, the final cut ----------------
+  { id:'crownExecute', name:"EXECUTIONER'S CROWN", boss:'choir', tag:'crown', icon:'sword', crown:true,
+    stat:'CULL UNDER 25%',
+    desc:'Any hit that drops a foe below a quarter of its health kills it outright. Judges are immune.',
+    apply: ()=>{ boons.execute = 0.25; } },
+  { id:'crownTurning', name:'THE TURNING CROWN', boss:'choir', tag:'crown', icon:'vortex', crown:true,
     stat:'PARRY FEEDS SKILLS',
     desc:'Every blade you turn out of the air takes 10s off JUDGEMENT and 4s off the Lance.',
     apply: ()=>{ boons.parryCharge = true; } },
-  { id:'crownStarved', name:'CROWN OF THE STARVED', tag:'crown', icon:'skull', crown:true,
-    stat:'KILLS CUT COOLDOWNS',
-    desc:'Every kill takes 0.6s off every cooldown you are holding.',
-    apply: ()=>{ boons.killHaste = 0.6; } }
+  { id:'crownEchoes', name:'CROWN OF ECHOES', boss:'choir', tag:'crown', icon:'ult', crown:true,
+    stat:'KILLS DETONATE + ECHO',
+    desc:'Every kill detonates in a sonic blast that echoes on to the nearest other foe.',
+    apply: ()=>{ boons.echoes = true; } },
+  { id:'crownChorus', name:'CROWN OF THE CHORUS', boss:'choir', tag:'crown', icon:'wind', crown:true,
+    stat:'EVERY 3RD SHOT: SONIC WAVE',
+    desc:'Every third shot looses a sonic wave that bursts out ahead of you.',
+    apply: ()=>{ boons.chorus = true; } }
 ];
 function findRelic(name){
   return BOON_POOL.find(x=>x.name === name) || CROWN_POOL.find(x=>x.name === name);
@@ -5722,11 +6667,16 @@ function buyShrineItem(id){
 let boonChoice = [];
 let boonArmAt = 0;      // wall-clock time the offer starts accepting clicks
 let offering = false;
-function offerBoon(fromJudge){
+function offerBoon(fromJudge, bossKind){
   if (duelMode || boss || !started || dead || won) return;
   // a felled judge draws from the crown tier instead, and only falls back to the nightly pool
-  // once every crown is already on your head
-  const crowns = CROWN_POOL.filter(b=> !boons.taken.includes(b.name));
+  // once every crown is already on your head. Each judge offers from its OWN four signature crowns;
+  // if you already hold all four (endless replays of the last boss), fall back to any untaken crown.
+  let crowns = CROWN_POOL.filter(b=> !boons.taken.includes(b.name));
+  if (fromJudge && bossKind){
+    const own = crowns.filter(b=> b.boss === bossKind);
+    if (own.length) crowns = own;
+  }
   const isCrown = !!fromJudge && crowns.length > 0;
   const pool = isCrown ? crowns.slice()
                        : BOON_POOL.filter(b=> !b.unique || !boons.taken.includes(b.name));
@@ -5786,7 +6736,8 @@ function duelWinGame(kind){
   document.exitPointerLock();
   document.getElementById('paused').style.display = 'none';
   document.getElementById('duelwinstats').textContent =
-    (kind === 'moss' ? 'MOSS, THE SECOND JUDGE' : kind === 'choir' ? 'CHOIR, THE HOLLOW VERDICT'
+    (kind === 'moss' ? 'MOSS, THE SECOND JUDGE' : kind === 'warden' ? 'THE WARDEN OF THE CRYPT'
+      : kind === 'choir' ? 'CHOIR, THE HOLLOW VERDICT'
       : 'GABRIEL, JUDGE OF THE HOLLOW KEEP') + ' — FELLED';
   document.getElementById('duelwin').style.display = 'flex';
 }
@@ -5887,12 +6838,18 @@ function updatePlayer(dt){
   if (player.onGround && wish.lengthSq()===0){
     const s = Math.max(0, 1 - MOVE.friction*dt); hv.multiplyScalar(s);
   }
-  // BLOODRUSH relic: a short speed surge after each kill raises the soft cap
+  // BLOODRUSH relic: a short speed surge after each kill raises the soft cap.
+  // Warden miasma slows you (slowT); his root-vines pin you outright (rootT) — dash still frees you.
   const max = MOVE.speed * (player.killSpeedT > 0 ? 1.35 : 1);
   if (hv.length() > max && player.dashMomentumT <= 0){   // dash window keeps the burst for a dash-jump
     const over = hv.length() - max;
     hv.setLength(max + over*Math.max(0, 1 - 3.2*dt));
   }
+  // Warden crowd control: his root-vines stop you dead (rootT); his miasma drags your top speed
+  // down by ~a third (slowT). A dash frees you from either — it drives position past this cap.
+  if (player.rootT > 0){ hv.set(0,0,0); player.rootT -= dt; }
+  else if (player.slowT > 0) hv.multiplyScalar(Math.max(0, 1 - 1.5*dt));
+  if (player.slowT > 0) player.slowT -= dt;
   player.vel.x = hv.x; player.vel.z = hv.z;
   player.vel.y -= MOVE.gravity*dt;
   if (player.invulnT > 0) player.invulnT -= dt;
@@ -6075,6 +7032,9 @@ function dash(){
   player.invulnT = Math.max(player.invulnT, boons.dashIframes ? 0.4 : 0.16);
   camera.fov += 10; addShake(0.12); sfxDash();
   burst(player.pos.clone().setY(player.pos.y-0.3), 0xbfe0ff, 10, 6, 0.4);
+  // SEISMIC CROWN (Moss): each dash slams a shockwave out from where you launch
+  if (boons.seismicDash)
+    crownBlast(player.pos.clone().setY(player.pos.y - player.eye + 0.5), 5.0, 40, 0xc99bff);
   // PHANTOM DASH relic: a brief window where dashing through enemies hurts them
   if (boons.dashDmg > 0){
     player.dashDmgT = 0.22;
@@ -6209,6 +7169,16 @@ function initInput(){
   const canvas = ()=> renderer.domElement;
   // the title backdrop is a live, drifting view of the keep (updateMenuView) — it is no
   // longer click-anywhere-to-start. Only PLAY starts the run.
+  // audio can't start before a user gesture — arm the title theme on the first click/keypress
+  // so the title screen isn't silent (PLAY's own initAudio()/AC.resume() stay as a fallback)
+  const armTitleMusic = ()=>{
+    initAudio(); if (AC.resume) AC.resume();
+    if (document.getElementById('title').style.display !== 'none') startMusic('title');
+    removeEventListener('pointerdown', armTitleMusic);
+    removeEventListener('keydown', armTitleMusic);
+  };
+  addEventListener('pointerdown', armTitleMusic);
+  addEventListener('keydown', armTitleMusic);
   document.getElementById('playbtn').addEventListener('click', e=>{
     e.stopPropagation();
     initAudio(); AC.resume();
@@ -6221,17 +7191,17 @@ function initInput(){
   });
   document.getElementById('death').addEventListener('click', ()=>{
     document.getElementById('death').style.display = 'none';
-    stopMusic();
     resetGame();
     started = false;
     document.getElementById('title').style.display = 'flex';
+    startMusic('title');
   });
   document.getElementById('win').addEventListener('click', ()=>{
     document.getElementById('win').style.display = 'none';
-    stopMusic();
     resetGame();
     started = false;
     document.getElementById('title').style.display = 'flex';
+    startMusic('title');
   });
   document.getElementById('paused').addEventListener('click', ()=> canvas().requestPointerLock());
   document.addEventListener('pointerlockchange', ()=>{
@@ -6288,6 +7258,7 @@ function initOptions(){
   document.getElementById('duelPickGabriel').addEventListener('click', e=>{ e.stopPropagation(); startDuel('gabriel'); });
   document.getElementById('duelPickMoss').addEventListener('click', e=>{ e.stopPropagation(); startDuel('moss'); });
   document.getElementById('duelPickChoir').addEventListener('click', e=>{ e.stopPropagation(); startDuel('choir'); });
+  document.getElementById('duelPickWarden').addEventListener('click', e=>{ e.stopPropagation(); startDuel('warden'); });
   document.getElementById('duelBack').addEventListener('click', e=>{
     e.stopPropagation();
     document.getElementById('duel').style.display = 'none';
@@ -6319,15 +7290,15 @@ function initOptions(){
   document.getElementById('duelwinSwitch').addEventListener('click', e=>{
     e.stopPropagation();
     document.getElementById('duelwin').style.display = 'none';
-    startDuel(duelKind === 'moss' ? 'gabriel' : duelKind === 'gabriel' ? 'choir' : 'moss');
+    startDuel(duelKind === 'gabriel' ? 'moss' : duelKind === 'moss' ? 'choir' : duelKind === 'choir' ? 'warden' : 'gabriel');
   });
   document.getElementById('duelwinTitle').addEventListener('click', e=>{
     e.stopPropagation();
     document.getElementById('duelwin').style.display = 'none';
-    stopMusic();
     resetGame();
     started = false;
     document.getElementById('title').style.display = 'flex';
+    startMusic('title');
   });
 
   for(let i=0;i<3;i++){
@@ -6371,12 +7342,13 @@ function loop(){
   if (!paused && !dead && !won){
     updatePlayer(rawDt);           // you move through the held breath
     updateMonsters(dt, time);
-    if (boss){ (boss.kind === 'moss' ? updateMoss : boss.kind === 'choir' ? updateChoir : updateBoss)(dt, time); }
+    if (boss){ (boss.kind === 'moss' ? updateMoss : boss.kind === 'warden' ? updateWarden : boss.kind === 'choir' ? updateChoir : updateBoss)(dt, time); }
     updateRains(dt);
     updateMortars(dt);
     updatePools(dt);
     updateShocks(dt);
-    updateBeam(dt);
+    updateBeam(dt);          // old Moss's sonic scream front (no-op unless a moss scream is live)
+    updateCrownPassives(dt);  // THE HALO / CROWN OF MIASMA — steady aura ticks (no-op unless owned)
     updateChoirBeams(dt);
     updateEnemyProjectiles(dt);
     updatePlayerProjectiles(dt);
