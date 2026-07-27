@@ -1087,13 +1087,13 @@ function buildZoneKeep(){
 //   Ossuary(Moss)    + gloom ..... dive-bombing birds (kuşlar)
 //   Void   (Choir)   + wraith .... ghosts, the Choir's own dead (hayaletler) — no longer gated
 function poolKeep(){
-  return Math.random() < 0.42 ? 'brute' : 'hollow';   // heavies stalk the first descent now
+  return Math.random() < 0.28 ? 'brute' : 'hollow';   // heavies stalk the first descent, but thinned out
 }
 // ---- the Crypt (Warden) — brutes joined by ranged spitters
 function poolCrypt(){
   const r = Math.random();
-  if (r < 0.32) return 'brute';
-  if (r < 0.58) return 'spitter';
+  if (r < 0.24) return 'brute';
+  if (r < 0.50) return 'spitter';
   return 'hollow';
 }
 // ---- the Ossuary (Moss) — dive-bombing birds join the brutes and spitters on the bone floor
@@ -1101,7 +1101,7 @@ function poolOssuary(){
   const r = Math.random();
   if (r < 0.30) return 'gloom';
   if (r < 0.52) return 'spitter';
-  if (r < 0.70) return 'brute';
+  if (r < 0.64) return 'brute';
   return 'hollow';
 }
 // ---- the Void (Choir) — the deepest arena: the Choir's ghosts haunt it from the first wave
@@ -1110,7 +1110,7 @@ function poolVoid(){
   if (r < 0.20) return 'wraith';   // ghosts belong to this arena now — no bossCount gate
   if (r < 0.40) return 'gloom';
   if (r < 0.58) return 'spitter';
-  if (r < 0.74) return 'brute';
+  if (r < 0.68) return 'brute';
   return 'hollow';
 }
 
