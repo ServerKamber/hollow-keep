@@ -472,7 +472,7 @@ function saveMeta(){
 }
 function applySettings(){
   if (masterGain) masterGain.gain.value = settings.volume;
-  for (const k in musicNodes){ musicNodes[k].el.volume = musicVol() * musicNodes[k].fade; }
+  if (musicGain && music.name) musicGain.gain.value = settings.music;
   if (camera) camera.fov = settings.fov;
   if (camera) camera.updateProjectionMatrix();
 }
@@ -1554,7 +1554,7 @@ function initAudio(){
   AC = new (window.AudioContext || window.webkitAudioContext)();
   masterGain = AC.createGain(); masterGain.gain.value = settings.volume; masterGain.connect(AC.destination);
   droneGain = AC.createGain(); droneGain.gain.value = 0.035; droneGain.connect(masterGain);
-  musicGain = AC.createGain(); musicGain.gain.value = settings.music; musicGain.connect(masterGain);
+  musicGain = AC.createGain(); musicGain.gain.value = 0.0001; musicGain.connect(masterGain);
   [55, 55.7, 110.4].forEach((f,i)=>{
     const o = AC.createOscillator(); o.type = i===2 ? 'triangle' : 'sine'; o.frequency.value = f;
     const g = AC.createGain(); g.gain.value = i===2 ? 0.25 : 0.6;
@@ -1563,99 +1563,131 @@ function initAudio(){
   const lfo = AC.createOscillator(); lfo.frequency.value = 0.07;
   const lg = AC.createGain(); lg.gain.value = 0.02;
   lfo.connect(lg); lg.connect(droneGain.gain); lfo.start();
-  warmMusic();   // audio is unlocked — start prefetching every track so none arrives late
 }
 
-// ---- music: authored mp3 tracks per context. Played on each element's own output (NOT through
-// WebAudio) — createMediaElementSource mutes tainted file:// media in Chromium, so we drive
-// el.volume directly. Crossfades tween volume; loudness honors the master + music sliders.
+// ---- music: a tiny lookahead step-sequencer over hand-scored tracks. Each track is a
+// 4-bar chord progression (bassProg/padProg, MIDI note numbers) played against an 8-step-per-bar
+// pulse pattern per voice, so "which beats play" and "what pitches play" are separate knobs.
 function midiFreq(m){ return 440 * Math.pow(2, (m-69)/12); }
-const MUSIC_BASE = 'musics/';
-const MUSIC_FILES = {
-  title:   ['title screen/The Fallen King.mp3'],
-  keep:    ['for runs/run for life.mp3', 'for runs/running  or dying.mp3'],
-  gabriel: ['gabriel/Fallen Halo.mp3'],
-  moss:    ['moss/Astral Kill Switch.mp3'],
-  moss2:   ['moss/Astral Kill 2.mp3'],
-  choir:   ['choir/Void Sigil Run.mp3'],
-};
-let music = { name: null };              // applySettings + triggers read .name
-const musicNodes = {};                   // key -> { el, files, file, fade }
-let curMusic = null;
-let musicFadeTimer = null;
-
-function musicVol(){ return Math.max(0, Math.min(1, settings.volume * settings.music)); }
-
-function loadTrack(name){
-  if (musicNodes[name]) return musicNodes[name];
-  const files = MUSIC_FILES[name]; if (!files) return null;
-  const file = files[(Math.random()*files.length)|0];
-  const el = new Audio(); el.src = encodeURI(MUSIC_BASE + file);
-  el.loop = true; el.preload = 'auto'; el.volume = 0;
-  return (musicNodes[name] = { el, files, file, fade: 0 });
-}
-
-// ---- warm the cache: the tracks are 4-8MB each and were only fetched at the instant they were
-// triggered, so a boss theme could arrive seconds late. Once audio is unlocked we quietly prefetch
-// every track in priority order, chained on canplaythrough so we never saturate bandwidth and delay
-// the early ones. Purely a download warm-up — nothing plays until startMusic() asks for it.
-const MUSIC_WARM_ORDER = ['title','keep','gabriel','moss2','moss','choir'];
-let _musicWarmed = false;
-function warmMusic(){
-  if (_musicWarmed) return; _musicWarmed = true;
-  let i = 0;
-  const step = ()=>{
-    while (i < MUSIC_WARM_ORDER.length){
-      const node = loadTrack(MUSIC_WARM_ORDER[i++]);
-      if (!node) continue;
-      let advanced = false;
-      const next = ()=>{ if (advanced) return; advanced = true; step(); };
-      node.el.addEventListener('canplaythrough', next, { once:true });
-      node.el.addEventListener('error', next, { once:true });
-      setTimeout(next, 5000);        // fallback so a stalled fetch never freezes the chain
-      try { node.el.load(); } catch(e){}
-      return;                        // fetch this one; the next starts when it's buffered
-    }
-  };
-  step();
-}
-
-// one shared tween: each track's fade eases toward 1 (if it's curMusic) or 0 (otherwise)
-function ensureFadeLoop(){
-  if (musicFadeTimer) return;
-  musicFadeTimer = setInterval(()=>{
-    let anyActive = false;
-    for (const k in musicNodes){
-      const nd = musicNodes[k];
-      const target = (k === curMusic) ? 1 : 0;
-      if (nd.fade < target) nd.fade = Math.min(target, nd.fade + 0.06);      // ~0.5s fade
-      else if (nd.fade > target) nd.fade = Math.max(target, nd.fade - 0.06);
-      nd.el.volume = musicVol() * nd.fade;
-      if (nd.fade > 0.0001) anyActive = true;
-      else if (!nd.el.paused){ try { nd.el.pause(); } catch(e){} }
-    }
-    if (!anyActive && !curMusic){ clearInterval(musicFadeTimer); musicFadeTimer = null; }
-  }, 33);
-}
-
-function startMusic(name){
-  if (curMusic === name) return;
-  const node = loadTrack(name); if (!node) return;
-  // multi-file tracks re-randomize each start (new run track each run)
-  if (node.files.length > 1){
-    const f = node.files[(Math.random()*node.files.length)|0];
-    if (f !== node.file){ node.file = f; node.el.src = encodeURI(MUSIC_BASE + f); }
+function musNote(freq, startT, dur, type, gainPeak, filterHz){
+  if (!AC) return;
+  const o = AC.createOscillator(); o.type = type; o.frequency.value = freq;
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.0001, startT);
+  g.gain.exponentialRampToValueAtTime(Math.max(gainPeak, 0.001), startT + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, startT + dur);
+  if (filterHz){
+    const f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = filterHz;
+    o.connect(f); f.connect(g);
+  } else {
+    o.connect(g);
   }
-  curMusic = name; music.name = name;
-  node.el.volume = musicVol() * node.fade;   // fade in from its current level
-  try { node.el.currentTime = 0; } catch(e){}
-  const p = node.el.play(); if (p && p.catch) p.catch(()=>{});   // autoplay guard
-  ensureFadeLoop();
+  g.connect(musicGain); o.start(startT); o.stop(startT + dur + 0.05);
 }
-
+const MUSIC_TRACKS = {
+  // slow, mournful D minor under the title card — one lead note per bar, lots of air
+  title: {
+    bpm: 60,
+    bassProg: [38, 46, 41, 45], padProg: [[50,53,57],[46,50,53],[41,45,48],[45,49,52]],
+    bassPulse: [1,0,0,0,0,0,0,0], padPulse: [1,0,0,0,0,0,0,0], leadPulse: [0,0,0,1,0,0,0,0],
+    bassType:'sine', bassFilter:240, padType:'triangle', padFilter:520, leadType:'sine', leadFilter:1200,
+    bassGain:0.16, padGain:0.09, leadGain:0.06
+  },
+  // dark, sparse, mostly negative space — sits under the drone while exploring
+  keep: {
+    bpm: 66,
+    bassProg: [45, 40, 43, 38], padProg: [[45,52,57],[40,47,52],[43,50,55],[38,45,50]],
+    bassPulse: [1,0,0,0,0,0,0,0], padPulse: [1,0,0,0,0,0,0,0], leadPulse: [0,0,0,0,0,0,1,0],
+    bassType:'sine', bassFilter:260, padType:'triangle', padFilter:480, leadType:'sine', leadFilter:1000,
+    bassGain:0.20, padGain:0.08, leadGain:0.06
+  },
+  // ceremonial dread march — heavy detuned "brass" chords, slow tolling downbeat
+  gabriel: {
+    bpm: 84,
+    bassProg: [40, 40, 37, 33], padProg: [[40,47,52,59],[40,47,52,59],[37,44,49,56],[33,40,45,52]],
+    bassPulse: [1,0,0,0,1,0,0,0], padPulse: [1,0,0,0,0,0,0,0], leadPulse: [0,0,1,0,0,0,1,0],
+    bassType:'sawtooth', bassFilter:220, padType:'sawtooth', padFilter:420, leadType:'sawtooth', leadFilter:700,
+    bassGain:0.18, padGain:0.15, leadGain:0.10
+  },
+  // relentless, fast, predatory — driving pulse, tighter dissonant stabs
+  moss: {
+    bpm: 140,
+    bassProg: [43, 43, 46, 41], padProg: [[43,50,54],[43,50,54],[46,53,57],[41,48,52]],
+    bassPulse: [1,1,1,1,1,1,1,1], padPulse: [0,0,1,0,0,0,1,0], leadPulse: [1,0,1,1,0,1,0,1],
+    bassType:'square', bassFilter:480, padType:'square', padFilter:900, leadType:'square', leadFilter:1600,
+    bassGain:0.14, padGain:0.10, leadGain:0.08
+  },
+  // many voices, one will — wide C minor chords swelling twice a bar, a high answering line
+  choir: {
+    bpm: 72,
+    bassProg: [36, 44, 41, 43], padProg: [[48,51,55,60],[44,48,51,56],[41,44,48,53],[43,47,50,55]],
+    bassPulse: [1,0,0,0,0,0,0,0], padPulse: [1,0,0,0,1,0,0,0], leadPulse: [0,0,0,0,0,0,1,1],
+    bassType:'sine', bassFilter:240, padType:'triangle', padFilter:700, leadType:'sine', leadFilter:1400,
+    bassGain:0.16, padGain:0.09, leadGain:0.05
+  }
+};
+let music = { name:null, timer:null, step:0, nextStepT:0, intensity:0 };
+function musicTick(){
+  if (!AC || !music.name) return;
+  const trk = MUSIC_TRACKS[music.name];
+  if (!trk) return;
+  const lookahead = 0.2;
+  const speed = music.intensity ? 0.82 : 1;
+  const stepDur = (60 / trk.bpm / 2) * speed;
+  const gainMul = music.intensity ? 1.15 : 1;
+  const filtMul = music.intensity ? 1.4 : 1;
+  while (music.nextStepT < AC.currentTime + lookahead){
+    const step = music.step % 32;
+    const bar = Math.floor(step / 8) % trk.bassProg.length;
+    const pulseIdx = step % 8;
+    const t = music.nextStepT;
+    if (trk.bassPulse[pulseIdx]) musNote(midiFreq(trk.bassProg[bar]), t, stepDur*1.4, trk.bassType, trk.bassGain*gainMul, trk.bassFilter*filtMul);
+    if (trk.padPulse[pulseIdx]) trk.padProg[bar].forEach(n=> musNote(midiFreq(n), t, stepDur*3.2, trk.padType, trk.padGain*gainMul, trk.padFilter*filtMul));
+    if (trk.leadPulse[pulseIdx]){
+      const chord = trk.padProg[bar];
+      const leadNote = chord[chord.length-1] + 12;
+      musNote(midiFreq(leadNote), t, stepDur*0.9, trk.leadType, trk.leadGain*gainMul, trk.leadFilter*filtMul);
+      if (music.intensity) musNote(midiFreq(leadNote+12), t, stepDur*0.6, trk.leadType, trk.leadGain*0.6, trk.leadFilter*filtMul);
+    }
+    music.nextStepT += stepDur;
+    music.step++;
+  }
+}
+function startMusic(name){
+  if (!AC || !musicGain) return;
+  // 'moss2' is the phase-2 rage cue: the same Moss score pushed faster and brighter
+  const rage = name === 'moss2';
+  if (rage) name = 'moss';
+  if (music.name === name && music.timer){ if (rage) music.intensity = 1; return; }
+  const engage = ()=>{
+    if (music.timer) clearInterval(music.timer);
+    music.name = name; music.step = 0; music.intensity = rage ? 1 : 0;
+    music.nextStepT = AC.currentTime + 0.05;
+    music.timer = setInterval(musicTick, 40);
+    const t = AC.currentTime;
+    musicGain.gain.cancelScheduledValues(t);
+    musicGain.gain.setValueAtTime(0.0001, t);
+    musicGain.gain.linearRampToValueAtTime(Math.max(settings.music, 0.0001), t + 0.5);
+  };
+  if (music.name && music.timer){
+    const t = AC.currentTime;
+    musicGain.gain.cancelScheduledValues(t);
+    musicGain.gain.setValueAtTime(musicGain.gain.value, t);
+    musicGain.gain.linearRampToValueAtTime(0.0001, t + 0.4);
+    setTimeout(engage, 420);
+  } else {
+    engage();
+  }
+}
 function stopMusic(){
-  curMusic = null; music.name = null;
-  ensureFadeLoop();   // loop eases every track to 0 and pauses it
+  if (music.timer){ clearInterval(music.timer); music.timer = null; }
+  music.name = null;
+  if (musicGain && AC){
+    const t = AC.currentTime;
+    musicGain.gain.cancelScheduledValues(t);
+    musicGain.gain.setValueAtTime(musicGain.gain.value, t);
+    musicGain.gain.linearRampToValueAtTime(0.0001, t + 0.4);
+  }
 }
 function sfxVictory(){
   if (!AC) return; const t = AC.currentTime;
@@ -3392,7 +3424,7 @@ function damageBoss(dmg, point, poiseMul){
     if (boss._leapRing){ scene.remove(boss._leapRing); boss._leapRing = null; }
     clearChoirBeams();
     boss.state = 'bloom'; boss.t = 0;
-    startMusic('moss2');   // the Warden's phase-2 gate swaps to the mp3 rage track
+    startMusic('moss2');   // the Warden's phase-2 gate pushes the score into its rage tempo
   }
   if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind === 'moss'){
     // OLD Moss (the Second Judge): the phase turn IS the quake — a grave-splitting slam, purple rage
@@ -3424,6 +3456,7 @@ function damageBoss(dmg, point, poiseMul){
     burst(boss.group.position.clone().setY(2.4), 0xd98cff, 44, 15);
     boss.queue = []; boss.slammed = false;
     clearChoirBeams();
+    music.intensity = 1;
   }
   if (boss.phase===1 && boss.hp <= boss.maxhp*0.5 && boss.kind !== 'moss' && boss.kind !== 'warden' && boss.kind !== 'choir'){
     boss.phase = 2;
@@ -3435,6 +3468,7 @@ function damageBoss(dmg, point, poiseMul){
     whisperNow('YOU HAVE ANGERED HIM');
     sfxHorn(); shake = Math.max(shake, 0.5);
     burst(boss.group.position.clone().setY(5), 0xff5040, 40, 14);
+    music.intensity = 1;
   }
   if (boss.phase===2 && boss.hp <= boss.maxhp*0.30 && boss.kind !== 'moss' && boss.kind !== 'warden' && boss.kind !== 'choir'){
     boss.phase = 3;

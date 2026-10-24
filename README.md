@@ -3,6 +3,14 @@
 A single-file, first-person liminal-horror shooter set in an abandoned blocky castle.
 No build step, no assets — everything (audio included) is generated in code.
 
+**[▶ Play in your browser](https://hollo-keeper.vercel.app)** · Desktop, keyboard and mouse
+
+| | |
+|---|---|
+| **Size** | One `index.html`, ~7,400 lines, zero image or audio files |
+| **Built with** | Three.js, Web Audio API (synthesized score and sound effects), procedural textures |
+| **Status** | Playable side project — eight content updates so far, still growing |
+
 ## Run it
 
 Open `index.html` in any modern desktop browser and click to enter.
@@ -353,3 +361,12 @@ pops on a state transition, and death from any state leaves a full-size body.
   with a long walk. It now picks from a near band (15–38 units), shuffled so the same entrance
   doesn't feed every wave. Average spawn distance drops **90 → 25 units**; nothing spawns inside
   geometry or within 10 units of you.
+
+## Credits
+
+The original idea and first prototype came from [@Nyctosky](https://github.com/Nyctosky). I took that base and built it
+out into what you see here.
+
+## License
+
+[MIT](LICENSE)
